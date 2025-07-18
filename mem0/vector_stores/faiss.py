@@ -39,6 +39,7 @@ class FAISS(VectorStoreBase):
         distance_strategy: str = "euclidean",
         normalize_L2: bool = False,
         embedding_model_dims: int = 1536,
+        data_path: Optional[str] = None,  # 添加data_path参数
     ):
         """
         Initialize the FAISS vector store.
@@ -50,9 +51,17 @@ class FAISS(VectorStoreBase):
                 Defaults to "euclidean".
             normalize_L2 (bool, optional): Whether to normalize L2 vectors. Only applicable for euclidean distance.
                 Defaults to False.
+            embedding_model_dims (int, optional): Embedding model dimensions. Defaults to 1536.
+            data_path (str, optional): Base data directory path. Defaults to None.
         """
         self.collection_name = collection_name
-        self.path = path or f"/tmp/faiss/{collection_name}"
+        
+        # 优先使用data_path作为基础路径
+        if data_path:
+            self.path = os.path.join(data_path, collection_name)
+        else:
+            self.path = path or f"/tmp/faiss/{collection_name}"
+            
         self.distance_strategy = distance_strategy
         self.normalize_L2 = normalize_L2
         self.embedding_model_dims = embedding_model_dims

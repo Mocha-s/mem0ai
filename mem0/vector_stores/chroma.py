@@ -28,6 +28,7 @@ class ChromaDB(VectorStoreBase):
         host: Optional[str] = None,
         port: Optional[int] = None,
         path: Optional[str] = None,
+        data_path: Optional[str] = None,  # 添加data_path参数
     ):
         """
         Initialize the Chromadb vector store.
@@ -38,6 +39,7 @@ class ChromaDB(VectorStoreBase):
             host (str, optional): Host address for chromadb server. Defaults to None.
             port (int, optional): Port for chromadb server. Defaults to None.
             path (str, optional): Path for local chromadb database. Defaults to None.
+            data_path (str, optional): Base data directory path. Defaults to None.
         """
         if client:
             self.client = client
@@ -49,7 +51,10 @@ class ChromaDB(VectorStoreBase):
                 self.settings.chroma_server_http_port = port
                 self.settings.chroma_api_impl = "chromadb.api.fastapi.FastAPI"
             else:
-                if path is None:
+                # 优先使用data_path作为基础路径
+                if data_path:
+                    path = data_path
+                elif path is None:
                     path = "db"
 
             self.settings.persist_directory = path

@@ -8,9 +8,16 @@ from mem0.graphs.configs import GraphStoreConfig
 from mem0.llms.configs import LlmConfig
 from mem0.vector_stores.configs import VectorStoreConfig
 
+# 获取数据目录配置
+DATA_DIR = os.environ.get("DATA_DIR")
+
 # Set up the directory path
 home_dir = os.path.expanduser("~")
 mem0_dir = os.environ.get("MEM0_DIR") or os.path.join(home_dir, ".mem0")
+
+# 如果设置了DATA_DIR，则优先使用DATA_DIR
+if DATA_DIR:
+    mem0_dir = DATA_DIR
 
 
 class MemoryItem(BaseModel):
@@ -41,7 +48,7 @@ class MemoryConfig(BaseModel):
     )
     history_db_path: str = Field(
         description="Path to the history database",
-        default=os.path.join(mem0_dir, "history.db"),
+        default=os.path.join(mem0_dir, "history/history.db"),
     )
     graph_store: GraphStoreConfig = Field(
         description="Configuration for the graph",
@@ -72,6 +79,10 @@ class MemoryConfig(BaseModel):
                 "I am", "I want", "I need", "I must", "I wish"
             ]
         }
+    )
+    data_dir: str = Field(
+        description="Base directory for all data storage",
+        default=mem0_dir,
     )
 
 

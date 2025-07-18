@@ -14,6 +14,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Load environment variables
 load_dotenv()
 
+# 数据目录配置
+DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
+
+# 确保目录存在
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(f"{DATA_DIR}/history", exist_ok=True)
+os.makedirs(f"{DATA_DIR}/vector_store", exist_ok=True)
+os.makedirs(f"{DATA_DIR}/graph_store", exist_ok=True)
 
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "postgres")
 POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
@@ -38,7 +46,8 @@ CUSTOM_OPENAI_API_KEY = os.environ.get("CUSTOM_OPENAI_API_KEY")
 OPENAI_API_KEY = CUSTOM_OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY")
 OPENAI_BASE_URL = CUSTOM_OPENAI_API_URL or os.environ.get("OPENAI_BASE_URL")
 
-HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
+# 使用DATA_DIR设置历史数据库路径
+HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", f"{DATA_DIR}/history/history.db")
 
 DEFAULT_CONFIG = {
     "version": "v1.1",
@@ -51,11 +60,17 @@ DEFAULT_CONFIG = {
             "user": POSTGRES_USER,
             "password": POSTGRES_PASSWORD,
             "collection_name": POSTGRES_COLLECTION_NAME,
+            "data_path": f"{DATA_DIR}/vector_store"  # 添加数据路径
         },
     },
     "graph_store": {
         "provider": "neo4j",
-        "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
+        "config": {
+            "url": NEO4J_URI, 
+            "username": NEO4J_USERNAME, 
+            "password": NEO4J_PASSWORD,
+            "data_path": f"{DATA_DIR}/graph_store"  # 添加数据路径
+        },
     },
     "llm": {
         "provider": "openai", 
