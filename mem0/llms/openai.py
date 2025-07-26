@@ -14,8 +14,8 @@ class OpenAILLM(LLMBase):
     def __init__(self, config: Optional[BaseLlmConfig] = None):
         super().__init__(config)
 
-        if not self.config.model:
-            self.config.model = "gpt-4o-mini"
+        # Configuration now handles environment variables, so we use config values directly
+        # The model default is already set in BaseLlmConfig (gpt-4o-mini)
 
         if os.environ.get("OPENROUTER_API_KEY"):  # Use OpenRouter
             self.client = OpenAI(
@@ -25,14 +25,12 @@ class OpenAILLM(LLMBase):
                 or "https://openrouter.ai/api/v1",
             )
         else:
-            api_key = self.config.api_key or os.getenv("OPENAI_API_KEY")
-            base_url = (
-                self.config.openai_base_url
-                or os.getenv("OPENAI_API_BASE")
-                or os.getenv("OPENAI_BASE_URL")
-                or "https://api.openai.com/v1"
-            )
-            if os.environ.get("OPENAI_API_BASE"):
+            # Use configuration values which already handle environment variables
+            api_key = self.config.api_key
+            base_url = self.config.openai_base_url
+
+            # Deprecation warning for old environment variable (only if not using new one)
+            if os.environ.get("OPENAI_API_BASE") and not os.environ.get("OPENAI_BASE_URL"):
                 warnings.warn(
                     "The environment variable 'OPENAI_API_BASE' is deprecated and will be removed in the 0.1.80. "
                     "Please use 'OPENAI_BASE_URL' instead.",
@@ -40,6 +38,24 @@ class OpenAILLM(LLMBase):
                 )
 
             self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+        # Validate connection if API key is provided
+        if self.config.api_key:
+            self._validate_connection()
+
+    def _validate_connection(self):
+        """Validate the connection to the API endpoint"""
+        try:
+            # Try to list models to validate connection
+            # This is a lightweight operation that verifies API key and endpoint
+            self.client.models.list()
+        except Exception as e:
+            # Log warning but don't fail initialization
+            warnings.warn(
+                f"Failed to validate connection to {self.config.openai_base_url}: {e}. "
+                "This may indicate an invalid API key or unreachable endpoint.",
+                UserWarning
+            )
 
     def _parse_response(self, response, tools):
         """

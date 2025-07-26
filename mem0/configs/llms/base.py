@@ -1,3 +1,4 @@
+import os
 from abc import ABC
 from typing import Dict, Optional, Union
 
@@ -104,10 +105,11 @@ class BaseLlmConfig(ABC):
         :type vllm_base_url: Optional[str], optional
         """
 
-        self.model = model
-        self.temperature = temperature
-        self.api_key = api_key
-        self.max_tokens = max_tokens
+        # Environment variable support with priority: explicit params > env vars > defaults
+        self.model = model if model is not None else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.temperature = temperature if temperature != 0.1 else float(os.getenv("OPENAI_TEMPERATURE", "0.1"))
+        self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY")
+        self.max_tokens = max_tokens if max_tokens != 2000 else int(os.getenv("OPENAI_MAX_TOKENS", "2000"))
         self.top_p = top_p
         self.top_k = top_k
         self.enable_vision = enable_vision
@@ -120,7 +122,11 @@ class BaseLlmConfig(ABC):
         self.models = models
         self.route = route
         self.openrouter_base_url = openrouter_base_url
-        self.openai_base_url = openai_base_url
+        # Support OPENAI_BASE_URL environment variable with backward compatibility
+        self.openai_base_url = (
+            openai_base_url if openai_base_url is not None
+            else os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+        )
         self.site_url = site_url
         self.app_name = app_name
 

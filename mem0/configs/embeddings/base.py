@@ -1,3 +1,4 @@
+import os
 from abc import ABC
 from typing import Dict, Optional, Union
 
@@ -73,9 +74,14 @@ class BaseEmbedderConfig(ABC):
         :type lmstudio_base_url: Optional[str], optional
         """
 
-        self.model = model
-        self.api_key = api_key
-        self.openai_base_url = openai_base_url
+        # Environment variable support with priority: explicit params > env vars > defaults
+        self.model = model if model is not None else os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY")
+        # Support OPENAI_BASE_URL environment variable with backward compatibility
+        self.openai_base_url = (
+            openai_base_url if openai_base_url is not None
+            else os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+        )
         self.embedding_dims = embedding_dims
 
         # AzureOpenAI specific

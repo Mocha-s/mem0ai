@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -31,24 +32,16 @@ MEMGRAPH_USERNAME = os.environ.get("MEMGRAPH_USERNAME", "memgraph")
 MEMGRAPH_PASSWORD = os.environ.get("MEMGRAPH_PASSWORD", "mem0graph")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
+HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/data/history.db")
 
 DEFAULT_CONFIG = {
     "version": "v1.1",
     "vector_store": {
-        "provider": "pgvector",
+        "provider": "qdrant",
         "config": {
-            "host": POSTGRES_HOST,
-            "port": int(POSTGRES_PORT),
-            "dbname": POSTGRES_DB,
-            "user": POSTGRES_USER,
-            "password": POSTGRES_PASSWORD,
-            "collection_name": POSTGRES_COLLECTION_NAME,
+            "host": "qdrant",
+            "port": 6333,
         },
-    },
-    "graph_store": {
-        "provider": "neo4j",
-        "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
     },
     "llm": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "temperature": 0.2, "model": "gpt-4o"}},
     "embedder": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "model": "text-embedding-3-small"}},
@@ -63,6 +56,64 @@ app = FastAPI(
     description="A REST API for managing and searching memories for your AI Agents and Apps.",
     version="1.0.0",
 )
+
+
+@app.get("/health", summary="Health Check")
+def health_check():
+    """Health check endpoint for Docker health checks and load balancers."""
+    try:
+        # Comprehensive health check
+        health_status = {
+            "status": "healthy",
+            "service": "mem0-api",
+            "version": "1.0.0",
+            "timestamp": time.time(),
+            "checks": {}
+        }
+
+        # Check memory instance
+        if MEMORY_INSTANCE:
+            health_status["checks"]["memory_instance"] = "ok"
+        else:
+            health_status["checks"]["memory_instance"] = "failed"
+            health_status["status"] = "unhealthy"
+
+        # Check database connections (basic connectivity)
+        try:
+            # This is a lightweight check - just verify the instance exists
+            if hasattr(MEMORY_INSTANCE, 'vector_store'):
+                health_status["checks"]["vector_store"] = "ok"
+            else:
+                health_status["checks"]["vector_store"] = "unknown"
+        except Exception:
+            health_status["checks"]["vector_store"] = "failed"
+
+        try:
+            if hasattr(MEMORY_INSTANCE, 'graph_store'):
+                health_status["checks"]["graph_store"] = "ok"
+            else:
+                health_status["checks"]["graph_store"] = "unknown"
+        except Exception:
+            health_status["checks"]["graph_store"] = "failed"
+
+        # Return appropriate status code
+        if health_status["status"] == "healthy":
+            return health_status
+        else:
+            raise HTTPException(status_code=503, detail=health_status)
+
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={
+            "status": "unhealthy",
+            "error": str(e),
+            "service": "mem0-api"
+        })
+
+
+@app.get("/", summary="Root Endpoint")
+def root():
+    """Root endpoint that redirects to API documentation."""
+    return RedirectResponse(url="/docs")
 
 
 class Message(BaseModel):
