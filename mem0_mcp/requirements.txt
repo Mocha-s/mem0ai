@@ -1,0 +1,19 @@
+# Mem0 MCP Server Requirements
+
+# Core dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+httpx>=0.25.0
+sse-starlette>=1.6.0
+
+# JSON validation (optional but recommended)
+jsonschema>=4.0.0
+
+# Additional utilities
+python-dotenv>=1.0.0
+
+# Development dependencies (optional)
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0

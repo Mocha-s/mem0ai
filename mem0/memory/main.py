@@ -725,13 +725,14 @@ class Memory(MemoryBase):
 
         return original_memories
 
-    def update(self, memory_id, data):
+    def update(self, memory_id, data, metadata=None):
         """
         Update a memory by ID.
 
         Args:
             memory_id (str): ID of the memory to update.
-            data (dict): Data to update the memory with.
+            data (str): Text data to update the memory with.
+            metadata (dict, optional): Metadata to update the memory with.
 
         Returns:
             dict: Updated memory.
@@ -740,7 +741,7 @@ class Memory(MemoryBase):
 
         existing_embeddings = {data: self.embedding_model.embed(data, "update")}
 
-        self._update_memory(memory_id, data, existing_embeddings)
+        self._update_memory(memory_id, data, existing_embeddings, metadata)
         return {"message": "Memory updated successfully!"}
 
     def delete(self, memory_id):
@@ -812,7 +813,7 @@ class Memory(MemoryBase):
         metadata = metadata or {}
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        metadata["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        metadata["created_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -885,7 +886,7 @@ class Memory(MemoryBase):
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
-        new_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        new_metadata["updated_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
 
         if "user_id" in existing_memory.payload:
             new_metadata["user_id"] = existing_memory.payload["user_id"]
@@ -1572,13 +1573,14 @@ class AsyncMemory(MemoryBase):
 
         return original_memories
 
-    async def update(self, memory_id, data):
+    async def update(self, memory_id, data, metadata=None):
         """
         Update a memory by ID asynchronously.
 
         Args:
             memory_id (str): ID of the memory to update.
-            data (dict): Data to update the memory with.
+            data (str): Text data to update the memory with.
+            metadata (dict, optional): Metadata to update the memory with.
 
         Returns:
             dict: Updated memory.
@@ -1588,7 +1590,7 @@ class AsyncMemory(MemoryBase):
         embeddings = await asyncio.to_thread(self.embedding_model.embed, data, "update")
         existing_embeddings = {data: embeddings}
 
-        await self._update_memory(memory_id, data, existing_embeddings)
+        await self._update_memory(memory_id, data, existing_embeddings, metadata)
         return {"message": "Memory updated successfully!"}
 
     async def delete(self, memory_id):
@@ -1665,7 +1667,7 @@ class AsyncMemory(MemoryBase):
         metadata = metadata or {}
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        metadata["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        metadata["created_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
 
         await asyncio.to_thread(
             self.vector_store.insert,
@@ -1755,7 +1757,7 @@ class AsyncMemory(MemoryBase):
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
-        new_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        new_metadata["updated_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
 
         if "user_id" in existing_memory.payload:
             new_metadata["user_id"] = existing_memory.payload["user_id"]

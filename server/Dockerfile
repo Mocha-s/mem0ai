@@ -34,6 +34,7 @@ RUN groupadd -r mem0 && useradd -r -g mem0 -s /bin/false mem0
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONWARNINGS=ignore::DeprecationWarning,ignore::UserWarning
 ENV PATH="/opt/venv/bin:$PATH"
 
 # 从构建阶段复制虚拟环境
