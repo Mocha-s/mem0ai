@@ -65,14 +65,16 @@ DEFAULT_CONFIG = {
         "config": {
             "api_key": OPENAI_API_KEY,
             "model": OPENAI_MODEL,
-            "temperature": OPENAI_TEMPERATURE
+            "temperature": OPENAI_TEMPERATURE,
+            "openai_base_url": OPENAI_BASE_URL
         }
     },
     "embedder": {
         "provider": "openai",
         "config": {
             "api_key": OPENAI_API_KEY,
-            "model": OPENAI_EMBEDDING_MODEL
+            "model": OPENAI_EMBEDDING_MODEL,
+            "openai_base_url": OPENAI_BASE_URL
         }
     },
     "history_db_path": HISTORY_DB_PATH,
@@ -166,6 +168,9 @@ class SearchRequest(BaseModel):
     run_id: Optional[str] = None
     agent_id: Optional[str] = None
     filters: Optional[Dict[str, Any]] = None
+    keyword_search: Optional[bool] = Field(False, description="Enable BM25 keyword search")
+    rerank: Optional[bool] = Field(False, description="Enable LLM-based reranking")
+    filter_memories: Optional[bool] = Field(False, description="Enable intelligent memory filtering")
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -209,6 +214,9 @@ class V2SearchRequest(BaseModel):
     query: str = Field(..., description="Search query string.")
     filters: Optional[Dict[str, Any]] = Field(None, description="Complex filters with AND/OR/NOT logic support.")
     limit: Optional[int] = Field(50, description="Maximum number of search results to return.", ge=1, le=1000)
+    keyword_search: Optional[bool] = Field(False, description="Enable BM25 keyword search")
+    rerank: Optional[bool] = Field(False, description="Enable LLM-based reranking")
+    filter_memories: Optional[bool] = Field(False, description="Enable intelligent memory filtering")
 
 
 @app.post("/configure", summary="Configure Mem0")
