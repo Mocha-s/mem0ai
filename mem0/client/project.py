@@ -6,7 +6,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from mem0.client.utils import api_error_handler
-from mem0.client.validation import validate_custom_categories
+from mem0.client.validation import validate_custom_categories, validate_custom_instructions
 from mem0.memory.telemetry import capture_client_event
 
 logger = logging.getLogger(__name__)
@@ -453,6 +453,10 @@ class Project(BaseProject):
                 "enable_graph"
             )
 
+        # Validate custom_instructions format if provided
+        if custom_instructions is not None:
+            validate_custom_instructions(custom_instructions)
+
         # Validate custom_categories format if provided
         if custom_categories is not None:
             validate_custom_categories(custom_categories)
@@ -802,6 +806,10 @@ class AsyncProject(BaseProject):
                 "custom_instructions, custom_categories, retrieval_criteria, "
                 "enable_graph"
             )
+
+        # Validate custom_instructions format if provided
+        if custom_instructions is not None:
+            validate_custom_instructions(custom_instructions)
 
         # Validate custom_categories format if provided
         if custom_categories is not None:

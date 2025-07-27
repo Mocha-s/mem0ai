@@ -1,17 +1,37 @@
 import { MemoryConfig, MemoryConfigSchema } from "../types";
 import { DEFAULT_MEMORY_CONFIG } from "./defaults";
 
+/**
+ * Field aliases mapping for backward compatibility
+ * Allows custom_instructions and customPrompt to be used interchangeably
+ */
+const FIELD_ALIASES = {
+  'custom_instructions': 'customPrompt',
+  'customPrompt': 'custom_instructions'
+} as const;
+
 export class ConfigManager {
   static mergeConfig(userConfig: Partial<MemoryConfig> = {}): MemoryConfig {
+    // Handle field aliases for backward compatibility
+    const processedConfig = { ...userConfig };
+
+    // Handle custom_instructions -> customPrompt mapping
+    if ('custom_instructions' in processedConfig && processedConfig.custom_instructions !== undefined) {
+      if (!processedConfig.customPrompt) {
+        processedConfig.customPrompt = (processedConfig as any).custom_instructions;
+      }
+      // Remove the alias field to avoid confusion
+      delete (processedConfig as any).custom_instructions;
+    }
     const mergedConfig = {
-      version: userConfig.version || DEFAULT_MEMORY_CONFIG.version,
+      version: processedConfig.version || DEFAULT_MEMORY_CONFIG.version,
       embedder: {
         provider:
-          userConfig.embedder?.provider ||
+          processedConfig.embedder?.provider ||
           DEFAULT_MEMORY_CONFIG.embedder.provider,
         config: (() => {
           const defaultConf = DEFAULT_MEMORY_CONFIG.embedder.config;
-          const userConf = userConfig.embedder?.config;
+          const userConf = processedConfig.embedder?.config;
           let finalModel: string | any = defaultConf.model;
 
           if (userConf?.model && typeof userConf.model === "object") {
@@ -36,11 +56,11 @@ export class ConfigManager {
       },
       vectorStore: {
         provider:
-          userConfig.vectorStore?.provider ||
+          processedConfig.vectorStore?.provider ||
           DEFAULT_MEMORY_CONFIG.vectorStore.provider,
         config: (() => {
           const defaultConf = DEFAULT_MEMORY_CONFIG.vectorStore.config;
-          const userConf = userConfig.vectorStore?.config;
+          const userConf = processedConfig.vectorStore?.config;
 
           // Prioritize user-provided client instance
           if (userConf?.client && typeof userConf.client === "object") {
@@ -67,10 +87,10 @@ export class ConfigManager {
       },
       llm: {
         provider:
-          userConfig.llm?.provider || DEFAULT_MEMORY_CONFIG.llm.provider,
+          processedConfig.llm?.provider || DEFAULT_MEMORY_CONFIG.llm.provider,
         config: (() => {
           const defaultConf = DEFAULT_MEMORY_CONFIG.llm.config;
-          const userConf = userConfig.llm?.config;
+          const userConf = processedConfig.llm?.config;
           let finalModel: string | any = defaultConf.model;
 
           if (userConf?.model && typeof userConf.model === "object") {
@@ -94,19 +114,19 @@ export class ConfigManager {
         })(),
       },
       historyDbPath:
-        userConfig.historyDbPath || DEFAULT_MEMORY_CONFIG.historyDbPath,
-      customPrompt: userConfig.customPrompt,
+        processedConfig.historyDbPath || DEFAULT_MEMORY_CONFIG.historyDbPath,
+      customPrompt: processedConfig.customPrompt,
       graphStore: {
         ...DEFAULT_MEMORY_CONFIG.graphStore,
-        ...userConfig.graphStore,
+        ...processedConfig.graphStore,
       },
       historyStore: {
         ...DEFAULT_MEMORY_CONFIG.historyStore,
-        ...userConfig.historyStore,
+        ...processedConfig.historyStore,
       },
       disableHistory:
-        userConfig.disableHistory || DEFAULT_MEMORY_CONFIG.disableHistory,
-      enableGraph: userConfig.enableGraph || DEFAULT_MEMORY_CONFIG.enableGraph,
+        processedConfig.disableHistory || DEFAULT_MEMORY_CONFIG.disableHistory,
+      enableGraph: processedConfig.enableGraph || DEFAULT_MEMORY_CONFIG.enableGraph,
     };
 
     // Validate the merged config

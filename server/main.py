@@ -169,6 +169,11 @@ class MemoryCreate(BaseModel):
         None,
         description="Optional list of custom category dictionaries. Format: [{'category_name': 'description'}, ...]"
     )
+    custom_instructions: Optional[str] = Field(
+        None,
+        description="Optional custom instructions to guide memory extraction and processing. "
+                   "Overrides the default fact extraction behavior for this request."
+    )
     version: Optional[str] = Field("v1", description="API version for memory creation. v1 (default) or v2 (contextual add).")
     includes: Optional[str] = Field(None, description="Include only specific types of memories")
     excludes: Optional[str] = Field(None, description="Exclude specific types of memories")
@@ -249,8 +254,6 @@ def add_memory(memory_create: MemoryCreate):
     if memory_create.version and memory_create.version not in ["v1", "v2"]:
         raise HTTPException(status_code=400, detail="Invalid version. Supported versions: v1, v2")
 
-    params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
-
     # Validate custom_categories if provided
     if memory_create.custom_categories is not None:
         try:
@@ -259,8 +262,38 @@ def add_memory(memory_create: MemoryCreate):
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
+    # Validate custom_instructions if provided
+    if memory_create.custom_instructions is not None:
+        try:
+            from mem0.client.validation import validate_custom_instructions
+            validate_custom_instructions(memory_create.custom_instructions)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    # Prepare parameters excluding messages and custom_instructions (handled separately)
+    params = {k: v for k, v in memory_create.model_dump().items() 
+              if v is not None and k not in ["messages", "custom_instructions"]}
+
     try:
-        response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+        # Handle custom_instructions by temporarily modifying the memory instance
+        if memory_create.custom_instructions is not None:
+            # Store original instructions
+            original_instructions = MEMORY_INSTANCE.custom_fact_extraction_prompt
+            
+            try:
+                # Temporarily set custom instructions
+                MEMORY_INSTANCE.custom_fact_extraction_prompt = memory_create.custom_instructions
+                
+                # Add memories with custom instructions
+                response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+                
+            finally:
+                # Always restore original instructions
+                MEMORY_INSTANCE.custom_fact_extraction_prompt = original_instructions
+        else:
+            # Normal processing without custom instructions
+            response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+
         return JSONResponse(content=response)
     except Exception as e:
         logging.exception("Error in add_memory:")  # This will log the full traceback

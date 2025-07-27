@@ -17,6 +17,7 @@ import {
   GetMemoryExportPayload,
 } from "./mem0.types";
 import { captureClientEvent, generateHash } from "./telemetry";
+import { Project } from "./project";
 
 class APIError extends Error {
   constructor(message: string) {
@@ -44,6 +45,7 @@ export default class MemoryClient {
   headers: Record<string, string>;
   client: any;
   telemetryId: string;
+  public project: Project;
 
   _validateApiKey(): any {
     if (!this.apiKey) {
@@ -79,6 +81,27 @@ export default class MemoryClient {
     }
   }
 
+  /**
+   * Validate custom_instructions parameter format
+   * @param instructions - Custom instructions string to validate
+   * @throws {APIError} If the format is invalid
+   */
+  private validateCustomInstructions(instructions?: string): void {
+    if (instructions !== undefined) {
+      if (typeof instructions !== "string") {
+        throw new APIError("custom_instructions must be a string");
+      }
+
+      if (!instructions.trim()) {
+        throw new APIError("custom_instructions cannot be empty or whitespace-only");
+      }
+
+      if (instructions.length > 10000) {
+        throw new APIError("custom_instructions too long (max 10000 characters)");
+      }
+    }
+  }
+
   constructor(options: ClientOptions) {
     this.apiKey = options.apiKey;
     this.host = options.host || "https://api.mem0.ai";
@@ -102,6 +125,9 @@ export default class MemoryClient {
 
     // Initialize with a temporary ID that will be updated
     this.telemetryId = "";
+
+    // Initialize the Project instance
+    this.project = new Project(this);
 
     // Initialize the client
     this._initializeClient();

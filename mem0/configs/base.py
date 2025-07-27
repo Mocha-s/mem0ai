@@ -81,6 +81,30 @@ class MemoryConfig(BaseModel):
         default=None,
     )
 
+    @property
+    def custom_instructions(self) -> Optional[str]:
+        """Get custom instructions (alias for custom_fact_extraction_prompt).
+
+        This property provides a unified interface for accessing custom instructions
+        while maintaining backward compatibility with the existing custom_fact_extraction_prompt field.
+
+        Returns:
+            Optional[str]: The custom instructions string, or None if not set.
+        """
+        return self.custom_fact_extraction_prompt
+
+    @custom_instructions.setter
+    def custom_instructions(self, value: Optional[str]) -> None:
+        """Set custom instructions (updates custom_fact_extraction_prompt).
+
+        This setter provides a unified interface for setting custom instructions
+        while maintaining backward compatibility with the existing custom_fact_extraction_prompt field.
+
+        Args:
+            value: The custom instructions string to set, or None to clear.
+        """
+        self.custom_fact_extraction_prompt = value
+
     def model_post_init(self, __context):
         """Post-initialization to ensure directories exist"""
         self.ensure_directories_exist()

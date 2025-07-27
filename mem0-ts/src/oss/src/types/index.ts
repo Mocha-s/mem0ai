@@ -77,6 +77,7 @@ export interface MemoryConfig {
   disableHistory?: boolean;
   historyDbPath?: string;
   customPrompt?: string;
+  custom_instructions?: string; // Alias for customPrompt, for API consistency
   graphStore?: GraphStoreConfig;
   enableGraph?: boolean;
 }
