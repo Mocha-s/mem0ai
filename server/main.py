@@ -165,6 +165,10 @@ class MemoryCreate(BaseModel):
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    custom_categories: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="Optional list of custom category dictionaries. Format: [{'category_name': 'description'}, ...]"
+    )
     version: Optional[str] = Field("v1", description="API version for memory creation. v1 (default) or v2 (contextual add).")
     includes: Optional[str] = Field(None, description="Include only specific types of memories")
     excludes: Optional[str] = Field(None, description="Exclude specific types of memories")
@@ -246,6 +250,15 @@ def add_memory(memory_create: MemoryCreate):
         raise HTTPException(status_code=400, detail="Invalid version. Supported versions: v1, v2")
 
     params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
+
+    # Validate custom_categories if provided
+    if memory_create.custom_categories is not None:
+        try:
+            from mem0.client.validation import validate_custom_categories
+            validate_custom_categories(memory_create.custom_categories)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
     try:
         response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
         return JSONResponse(content=response)

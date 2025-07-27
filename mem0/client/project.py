@@ -6,6 +6,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from mem0.client.utils import api_error_handler
+from mem0.client.validation import validate_custom_categories
 from mem0.memory.telemetry import capture_client_event
 
 logger = logging.getLogger(__name__)
@@ -367,25 +368,78 @@ class Project(BaseProject):
     def update(
         self,
         custom_instructions: Optional[str] = None,
-        custom_categories: Optional[List[str]] = None,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
         retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
         enable_graph: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Update project settings.
 
+        This method allows you to update various project-level settings that
+        will be applied to all memories created within this project. Custom
+        categories set here will be used as the default categorization system
+        for all new memories, unless overridden by the custom_categories
+        parameter in individual add() calls.
+
         Args:
-            custom_instructions: New instructions for the project
-            custom_categories: New categories for the project
-            retrieval_criteria: New retrieval criteria for the project
-            enable_graph: Enable or disable the graph for the project
+            custom_instructions: New instructions for the project that guide
+                               how memories should be processed and categorized.
+            custom_categories: New categories for the project that will be used
+                              as the default categorization system for all memories.
+                              Format: [{"category_name": "description"}, ...]
+                              Each dictionary should contain exactly one key-value
+                              pair where both key and value are strings. When set,
+                              these categories replace the system default categories.
+            retrieval_criteria: New retrieval criteria for the project that
+                               define how memories should be searched and retrieved.
+            enable_graph: Enable or disable the graph feature for the project,
+                         which affects how memories are connected and related.
 
         Returns:
-            Dictionary containing the API response.
+            Dictionary containing the API response with updated project settings.
 
         Raises:
-            APIError: If the API request fails.
-            ValueError: If org_id or project_id are not set.
+            APIError: If the API request fails due to network issues,
+                     authentication problems, or server errors.
+            ValueError: If org_id or project_id are not set, if no parameters
+                       are provided for update, or if custom_categories format
+                       is invalid (not a list, contains non-dictionary items,
+                       has empty dictionaries, or contains non-string keys/values).
+
+        Examples:
+            Update custom categories only:
+                >>> project = Project(api_key="your-api-key")
+                >>> custom_cats = [
+                ...     {"work": "Work-related memories"},
+                ...     {"personal": "Personal life events"},
+                ...     {"learning": "Educational content and insights"}
+                ... ]
+                >>> result = project.update(custom_categories=custom_cats)
+
+            Update multiple settings:
+                >>> result = project.update(
+                ...     custom_instructions="Focus on extracting key insights",
+                ...     custom_categories=custom_cats,
+                ...     enable_graph=True
+                ... )
+
+            Update with retrieval criteria:
+                >>> criteria = [
+                ...     {"field": "timestamp", "operator": "gte", "value": "2024-01-01"}
+                ... ]
+                >>> result = project.update(
+                ...     custom_categories=custom_cats,
+                ...     retrieval_criteria=criteria
+                ... )
+
+        Note:
+            Project-level custom categories serve as the default categorization
+            system for all memories in the project. They can be overridden on a
+            per-memory basis by providing custom_categories in the add() method.
+            Priority order: memory-level custom_categories > project-level
+            custom_categories > system default categories. If neither project-level
+            nor memory-level custom categories are set, the system will use
+            built-in default categories.
         """
         if (
             custom_instructions is None
@@ -398,6 +452,10 @@ class Project(BaseProject):
                 "custom_instructions, custom_categories, retrieval_criteria, "
                 "enable_graph"
             )
+
+        # Validate custom_categories format if provided
+        if custom_categories is not None:
+            validate_custom_categories(custom_categories)
 
         payload = self._prepare_params(
             {
@@ -660,25 +718,78 @@ class AsyncProject(BaseProject):
     async def update(
         self,
         custom_instructions: Optional[str] = None,
-        custom_categories: Optional[List[str]] = None,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
         retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
         enable_graph: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
-        Update project settings.
+        Update project settings asynchronously.
+
+        This async method allows you to update various project-level settings that
+        will be applied to all memories created within this project. Custom
+        categories set here will be used as the default categorization system
+        for all new memories, unless overridden by the custom_categories
+        parameter in individual add() calls.
 
         Args:
-            custom_instructions: New instructions for the project
-            custom_categories: New categories for the project
-            retrieval_criteria: New retrieval criteria for the project
-            enable_graph: Enable or disable the graph for the project
+            custom_instructions: New instructions for the project that guide
+                               how memories should be processed and categorized.
+            custom_categories: New categories for the project that will be used
+                              as the default categorization system for all memories.
+                              Format: [{"category_name": "description"}, ...]
+                              Each dictionary should contain exactly one key-value
+                              pair where both key and value are strings. When set,
+                              these categories replace the system default categories.
+            retrieval_criteria: New retrieval criteria for the project that
+                               define how memories should be searched and retrieved.
+            enable_graph: Enable or disable the graph feature for the project,
+                         which affects how memories are connected and related.
 
         Returns:
-            Dictionary containing the API response.
+            Dictionary containing the API response with updated project settings.
 
         Raises:
-            APIError: If the API request fails.
-            ValueError: If org_id or project_id are not set.
+            APIError: If the API request fails due to network issues,
+                     authentication problems, or server errors.
+            ValueError: If org_id or project_id are not set, if no parameters
+                       are provided for update, or if custom_categories format
+                       is invalid (not a list, contains non-dictionary items,
+                       has empty dictionaries, or contains non-string keys/values).
+
+        Examples:
+            Update custom categories only:
+                >>> project = AsyncProject(api_key="your-api-key")
+                >>> custom_cats = [
+                ...     {"work": "Work-related memories"},
+                ...     {"personal": "Personal life events"},
+                ...     {"learning": "Educational content and insights"}
+                ... ]
+                >>> result = await project.update(custom_categories=custom_cats)
+
+            Update multiple settings:
+                >>> result = await project.update(
+                ...     custom_instructions="Focus on extracting key insights",
+                ...     custom_categories=custom_cats,
+                ...     enable_graph=True
+                ... )
+
+            Update with retrieval criteria:
+                >>> criteria = [
+                ...     {"field": "timestamp", "operator": "gte", "value": "2024-01-01"}
+                ... ]
+                >>> result = await project.update(
+                ...     custom_categories=custom_cats,
+                ...     retrieval_criteria=criteria
+                ... )
+
+        Note:
+            Project-level custom categories serve as the default categorization
+            system for all memories in the project. They can be overridden on a
+            per-memory basis by providing custom_categories in the add() method.
+            Priority order: memory-level custom_categories > project-level
+            custom_categories > system default categories. If neither project-level
+            nor memory-level custom categories are set, the system will use
+            built-in default categories.
         """
         if (
             custom_instructions is None
@@ -691,6 +802,10 @@ class AsyncProject(BaseProject):
                 "custom_instructions, custom_categories, retrieval_criteria, "
                 "enable_graph"
             )
+
+        # Validate custom_categories format if provided
+        if custom_categories is not None:
+            validate_custom_categories(custom_categories)
 
         payload = self._prepare_params(
             {
