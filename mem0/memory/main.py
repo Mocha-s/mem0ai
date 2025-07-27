@@ -200,6 +200,7 @@ class Memory(MemoryBase):
         infer: bool = True,
         memory_type: Optional[str] = None,
         prompt: Optional[str] = None,
+        version: Optional[str] = "v1",
     ):
         """
         Create a new memory.
@@ -222,6 +223,8 @@ class Memory(MemoryBase):
                 creating procedural memories (typically requires 'agent_id'). Otherwise, memories
                 are treated as general conversational/factual memories.memory_type (str, optional): Type of memory to create. Defaults to None. By default, it creates the short term memories and long term (semantic and episodic) memories. Pass "procedural_memory" to create procedural memories.
             prompt (str, optional): Prompt to use for the memory creation. Defaults to None.
+            version (str, optional): API version for memory creation. "v1" (default) for standard
+                behavior, "v2" for contextual add with automatic history retrieval. Defaults to "v1".
 
 
         Returns:

@@ -165,6 +165,7 @@ class MemoryCreate(BaseModel):
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    version: Optional[str] = Field("v1", description="API version for memory creation. v1 (default) or v2 (contextual add).")
 
 
 class SearchRequest(BaseModel):
@@ -237,6 +238,10 @@ def add_memory(memory_create: MemoryCreate):
     """Store new memories."""
     if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
         raise HTTPException(status_code=400, detail="At least one identifier (user_id, agent_id, run_id) is required.")
+
+    # Validate version parameter
+    if memory_create.version and memory_create.version not in ["v1", "v2"]:
+        raise HTTPException(status_code=400, detail="Invalid version. Supported versions: v1, v2")
 
     params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
     try:
