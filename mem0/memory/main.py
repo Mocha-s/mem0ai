@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 import warnings
 from copy import deepcopy
@@ -39,6 +40,13 @@ try:
 except ImportError:
     AdvancedRetrieval = None
     logging.warning("AdvancedRetrieval not available. Advanced search features will be disabled.")
+
+# Import performance monitoring
+try:
+    from mem0.retrieval.performance import PerformanceMonitor
+except ImportError:
+    PerformanceMonitor = None
+    logging.warning("PerformanceMonitor not available. Performance monitoring will be disabled.")
 
 
 def _build_filters_and_metadata(
@@ -162,6 +170,12 @@ class Memory(MemoryBase):
         self._telemetry_vector_store = VectorStoreFactory.create(
             self.config.vector_store.provider, self.config.vector_store.config
         )
+
+        # Initialize performance optimization features
+        self._contextual_history_cache = {}  # Cache for historical messages
+        self._cache_max_size = 100  # Maximum cache entries
+        self._cache_ttl = 300  # Cache TTL in seconds (5 minutes)
+
         capture_event("mem0.init", self, {"sync_type": "sync"})
 
     @classmethod
@@ -240,6 +254,61 @@ class Memory(MemoryBase):
             run_id=run_id,
             input_metadata=metadata,
         )
+
+        # Validate version parameter
+        if version not in ["v1", "v2"]:
+            raise ValueError(f"Invalid version '{version}'. Supported versions: v1, v2")
+
+        # Add version information to metadata for storage
+        processed_metadata["api_version"] = version
+        if version == "v2":
+            # Store original messages for v2 contextual add
+            processed_metadata["original_messages"] = messages
+
+        # Version-specific processing
+        if version == "v2":
+            # Start performance monitoring for v2 processing
+            v2_start_time = time.time() if PerformanceMonitor else None
+
+            try:
+                # Implement v2 contextual add logic
+                import logging
+                logging.info("Processing v2 contextual add with automatic history retrieval")
+
+                # Retrieve historical context
+                historical_messages = self._retrieve_contextual_history(effective_filters, limit=10)
+
+                # Merge historical context with new messages
+                contextualized_messages = self._merge_historical_context(historical_messages, messages)
+
+                # Use the merged messages for processing instead of original messages
+                messages = contextualized_messages
+
+                # Add telemetry event for v2 processing
+                capture_event("mem0.contextual_add_v2", self, {
+                    "historical_count": len(historical_messages),
+                    "new_count": len(processed_metadata.get("original_messages", [])),
+                    "merged_count": len(contextualized_messages),
+                    "sync_type": "sync"
+                })
+
+                logging.info(f"v2 contextual add: merged {len(historical_messages)} historical + {len(processed_metadata.get('original_messages', []))} new messages into {len(contextualized_messages)} total messages")
+
+                # Log v2 processing performance
+                if PerformanceMonitor and v2_start_time:
+                    v2_elapsed_ms = (time.time() - v2_start_time) * 1000
+                    if v2_elapsed_ms > 800:  # Target: <800ms
+                        logging.warning(f"v2 contextual add exceeded target: {v2_elapsed_ms:.2f}ms > 800ms")
+                    else:
+                        logging.info(f"v2 contextual add completed in {v2_elapsed_ms:.2f}ms")
+
+            except Exception as e:
+                # Graceful degradation: fall back to v1 behavior on error
+                logging.warning(f"v2 contextual add failed, falling back to v1 behavior: {e}")
+                capture_event("mem0.contextual_add_v2_fallback", self, {
+                    "error": str(e),
+                    "sync_type": "sync"
+                })
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
             raise ValueError(
@@ -888,6 +957,180 @@ class Memory(MemoryBase):
         capture_event("mem0._create_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
         return memory_id
 
+    def _retrieve_contextual_history(self, filters, limit=10):
+        """
+        Retrieve historical messages for contextual add v2.
+
+        Args:
+            filters (dict): Filters to apply for retrieving historical memories
+            limit (int): Maximum number of historical conversations to retrieve (default: 10)
+
+        Returns:
+            list: List of historical messages in chronological order
+        """
+        # Apply performance monitoring if available
+        if PerformanceMonitor:
+            start_time = time.time()
+
+        # Check cache first for performance optimization
+        cache_key = f"{filters.get('user_id', '')}_{filters.get('run_id', '')}_{limit}"
+        current_time = time.time()
+
+        if hasattr(self, '_contextual_history_cache') and cache_key in self._contextual_history_cache:
+            cached_data = self._contextual_history_cache[cache_key]
+            if current_time - cached_data['timestamp'] < self._cache_ttl:
+                logging.debug(f"Cache hit for contextual history: {cache_key}")
+                return cached_data['data']
+            else:
+                # Remove expired cache entry
+                del self._contextual_history_cache[cache_key]
+
+        try:
+            # Get historical memories using existing get_all functionality
+            historical_memories = self._get_all_from_vector_store(filters, limit=limit * 5)  # Get more to filter
+
+            # Extract original messages from v2 memories and sort by creation time
+            historical_messages = []
+            for memory in historical_memories:
+                # Check if this memory has original_messages (v2 data)
+                if "metadata" in memory and "original_messages" in memory["metadata"]:
+                    original_messages = memory["metadata"]["original_messages"]
+                    created_at = memory.get("created_at")
+
+                    # Add timestamp to each message for sorting
+                    for msg in original_messages:
+                        msg_with_timestamp = msg.copy()
+                        msg_with_timestamp["_created_at"] = created_at
+                        historical_messages.append(msg_with_timestamp)
+                elif "metadata" in memory and "api_version" in memory["metadata"] and memory["metadata"]["api_version"] == "v2":
+                    # v2 memory but no original_messages (edge case)
+                    continue
+                # Skip v1 memories as they don't have original_messages
+
+            # Sort by creation time (oldest first for chronological order)
+            historical_messages.sort(key=lambda x: x.get("_created_at", ""))
+
+            # Remove timestamp and limit to requested number of messages
+            result_messages = []
+            for msg in historical_messages[:limit * 2]:  # Allow some buffer for conversation pairs
+                clean_msg = {k: v for k, v in msg.items() if k != "_created_at"}
+                result_messages.append(clean_msg)
+
+            result = result_messages[:limit * 2]  # Return up to limit*2 messages (user+assistant pairs)
+
+            # Cache the result for future use
+            if hasattr(self, '_contextual_history_cache'):
+                # Implement simple LRU by removing oldest entries if cache is full
+                if len(self._contextual_history_cache) >= self._cache_max_size:
+                    oldest_key = min(self._contextual_history_cache.keys(),
+                                   key=lambda k: self._contextual_history_cache[k]['timestamp'])
+                    del self._contextual_history_cache[oldest_key]
+
+                self._contextual_history_cache[cache_key] = {
+                    'data': result,
+                    'timestamp': current_time
+                }
+                logging.debug(f"Cached contextual history for: {cache_key}")
+
+            # Log performance metrics
+            if PerformanceMonitor:
+                elapsed_ms = (time.time() - start_time) * 1000
+                if elapsed_ms > 500:  # Target: <500ms
+                    logging.warning(f"Contextual history retrieval exceeded target: {elapsed_ms:.2f}ms > 500ms")
+                else:
+                    logging.debug(f"Contextual history retrieval completed in {elapsed_ms:.2f}ms")
+
+            return result
+
+        except Exception as e:
+            logging.warning(f"Error retrieving contextual history: {e}")
+            return []
+
+    def _merge_historical_context(self, historical_messages, new_messages):
+        """
+        Merge historical messages with new messages to form complete conversation context.
+
+        Args:
+            historical_messages (list): List of historical messages from contextual history
+            new_messages (list): List of new messages to be added
+
+        Returns:
+            list: Merged and deduplicated messages in chronological order
+        """
+        try:
+            # Ensure both inputs are lists
+            if not isinstance(historical_messages, list):
+                historical_messages = []
+            if not isinstance(new_messages, list):
+                new_messages = []
+
+            # Create a set to track seen message content for deduplication
+            seen_messages = set()
+            merged_messages = []
+
+            # Helper function to create a unique key for message deduplication
+            def get_message_key(msg):
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    # Use role + content hash for deduplication
+                    content_hash = hash(str(msg["content"]).strip().lower())
+                    return f"{msg['role']}:{content_hash}"
+                return None
+
+            # Add historical messages first (they are already sorted chronologically)
+            for msg in historical_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Add new messages, avoiding duplicates
+            for msg in new_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Implement token length control (rough estimation)
+            # Assume average 4 characters per token, limit to ~8000 tokens (~32000 characters)
+            max_chars = 32000
+            total_chars = 0
+            final_messages = []
+
+            for msg in merged_messages:
+                msg_chars = len(str(msg.get("content", "")))
+                if total_chars + msg_chars <= max_chars:
+                    final_messages.append(msg)
+                    total_chars += msg_chars
+                else:
+                    # If we exceed the limit, stop adding more messages
+                    break
+
+            logging.info(f"Merged {len(historical_messages)} historical + {len(new_messages)} new messages into {len(final_messages)} unique messages")
+            return final_messages
+
+        except Exception as e:
+            logging.warning(f"Error merging historical context: {e}")
+            # Fallback to just new messages if merging fails
+            return new_messages
+
     def _create_procedural_memory(self, messages, metadata=None, prompt=None):
         """
         Create a procedural memory
@@ -1053,6 +1296,11 @@ class AsyncMemory(MemoryBase):
         else:
             self.graph = None
 
+        # Initialize performance optimization features
+        self._contextual_history_cache = {}  # Cache for historical messages
+        self._cache_max_size = 100  # Maximum cache entries
+        self._cache_ttl = 300  # Cache TTL in seconds (5 minutes)
+
         capture_event("mem0.init", self, {"sync_type": "async"})
 
     @classmethod
@@ -1092,6 +1340,7 @@ class AsyncMemory(MemoryBase):
         memory_type: Optional[str] = None,
         prompt: Optional[str] = None,
         llm=None,
+        version: Optional[str] = "v1",
     ):
         """
         Create a new memory asynchronously.
@@ -1107,12 +1356,69 @@ class AsyncMemory(MemoryBase):
                                          Pass "procedural_memory" to create procedural memories.
             prompt (str, optional): Prompt to use for the memory creation. Defaults to None.
             llm (BaseChatModel, optional): LLM class to use for generating procedural memories. Defaults to None. Useful when user is using LangChain ChatModel.
+            version (str, optional): API version for memory creation. "v1" (default) for standard
+                behavior, "v2" for contextual add with automatic history retrieval. Defaults to "v1".
         Returns:
             dict: A dictionary containing the result of the memory addition operation.
         """
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_metadata=metadata
         )
+
+        # Validate version parameter
+        if version not in ["v1", "v2"]:
+            raise ValueError(f"Invalid version '{version}'. Supported versions: v1, v2")
+
+        # Add version information to metadata for storage
+        processed_metadata["api_version"] = version
+        if version == "v2":
+            # Store original messages for v2 contextual add
+            processed_metadata["original_messages"] = messages
+
+        # Version-specific processing
+        if version == "v2":
+            # Start performance monitoring for v2 processing
+            v2_start_time = time.time() if PerformanceMonitor else None
+
+            try:
+                # Implement v2 contextual add logic
+                import logging
+                logging.info("Processing v2 contextual add with automatic history retrieval")
+
+                # Retrieve historical context
+                historical_messages = await self._retrieve_contextual_history(effective_filters, limit=10)
+
+                # Merge historical context with new messages
+                contextualized_messages = self._merge_historical_context(historical_messages, messages)
+
+                # Use the merged messages for processing instead of original messages
+                messages = contextualized_messages
+
+                # Add telemetry event for v2 processing
+                capture_event("mem0.contextual_add_v2", self, {
+                    "historical_count": len(historical_messages),
+                    "new_count": len(processed_metadata.get("original_messages", [])),
+                    "merged_count": len(contextualized_messages),
+                    "sync_type": "async"
+                })
+
+                logging.info(f"v2 contextual add: merged {len(historical_messages)} historical + {len(processed_metadata.get('original_messages', []))} new messages into {len(contextualized_messages)} total messages")
+
+                # Log v2 processing performance
+                if PerformanceMonitor and v2_start_time:
+                    v2_elapsed_ms = (time.time() - v2_start_time) * 1000
+                    if v2_elapsed_ms > 800:  # Target: <800ms
+                        logging.warning(f"Async v2 contextual add exceeded target: {v2_elapsed_ms:.2f}ms > 800ms")
+                    else:
+                        logging.info(f"Async v2 contextual add completed in {v2_elapsed_ms:.2f}ms")
+
+            except Exception as e:
+                # Graceful degradation: fall back to v1 behavior on error
+                logging.warning(f"v2 contextual add failed, falling back to v1 behavior: {e}")
+                capture_event("mem0.contextual_add_v2_fallback", self, {
+                    "error": str(e),
+                    "sync_type": "async"
+                })
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
             raise ValueError(
@@ -1784,6 +2090,182 @@ class AsyncMemory(MemoryBase):
 
         capture_event("mem0._create_memory", self, {"memory_id": memory_id, "sync_type": "async"})
         return memory_id
+
+    async def _retrieve_contextual_history(self, filters, limit=10):
+        """
+        Retrieve historical messages for contextual add v2 asynchronously.
+
+        Args:
+            filters (dict): Filters to apply for retrieving historical memories
+            limit (int): Maximum number of historical conversations to retrieve (default: 10)
+
+        Returns:
+            list: List of historical messages in chronological order
+        """
+        # Apply performance monitoring if available
+        if PerformanceMonitor:
+            start_time = time.time()
+
+        # Check cache first for performance optimization
+        cache_key = f"{filters.get('user_id', '')}_{filters.get('run_id', '')}_{limit}"
+        current_time = time.time()
+
+        if hasattr(self, '_contextual_history_cache') and cache_key in self._contextual_history_cache:
+            cached_data = self._contextual_history_cache[cache_key]
+            if current_time - cached_data['timestamp'] < self._cache_ttl:
+                logging.debug(f"Async cache hit for contextual history: {cache_key}")
+                return cached_data['data']
+            else:
+                # Remove expired cache entry
+                del self._contextual_history_cache[cache_key]
+
+        try:
+            # Get historical memories using existing get_all functionality
+            historical_memories = await asyncio.to_thread(
+                self._get_all_from_vector_store, filters, limit * 5
+            )  # Get more to filter
+
+            # Extract original messages from v2 memories and sort by creation time
+            historical_messages = []
+            for memory in historical_memories:
+                # Check if this memory has original_messages (v2 data)
+                if "metadata" in memory and "original_messages" in memory["metadata"]:
+                    original_messages = memory["metadata"]["original_messages"]
+                    created_at = memory.get("created_at")
+
+                    # Add timestamp to each message for sorting
+                    for msg in original_messages:
+                        msg_with_timestamp = msg.copy()
+                        msg_with_timestamp["_created_at"] = created_at
+                        historical_messages.append(msg_with_timestamp)
+                elif "metadata" in memory and "api_version" in memory["metadata"] and memory["metadata"]["api_version"] == "v2":
+                    # v2 memory but no original_messages (edge case)
+                    continue
+                # Skip v1 memories as they don't have original_messages
+
+            # Sort by creation time (oldest first for chronological order)
+            historical_messages.sort(key=lambda x: x.get("_created_at", ""))
+
+            # Remove timestamp and limit to requested number of messages
+            result_messages = []
+            for msg in historical_messages[:limit * 2]:  # Allow some buffer for conversation pairs
+                clean_msg = {k: v for k, v in msg.items() if k != "_created_at"}
+                result_messages.append(clean_msg)
+
+            result = result_messages[:limit * 2]  # Return up to limit*2 messages (user+assistant pairs)
+
+            # Cache the result for future use
+            if hasattr(self, '_contextual_history_cache'):
+                # Implement simple LRU by removing oldest entries if cache is full
+                if len(self._contextual_history_cache) >= self._cache_max_size:
+                    oldest_key = min(self._contextual_history_cache.keys(),
+                                   key=lambda k: self._contextual_history_cache[k]['timestamp'])
+                    del self._contextual_history_cache[oldest_key]
+
+                self._contextual_history_cache[cache_key] = {
+                    'data': result,
+                    'timestamp': current_time
+                }
+                logging.debug(f"Async cached contextual history for: {cache_key}")
+
+            # Log performance metrics
+            if PerformanceMonitor:
+                elapsed_ms = (time.time() - start_time) * 1000
+                if elapsed_ms > 500:  # Target: <500ms
+                    logging.warning(f"Async contextual history retrieval exceeded target: {elapsed_ms:.2f}ms > 500ms")
+                else:
+                    logging.debug(f"Async contextual history retrieval completed in {elapsed_ms:.2f}ms")
+
+            return result
+
+        except Exception as e:
+            logging.warning(f"Error retrieving contextual history: {e}")
+            return []
+
+    def _merge_historical_context(self, historical_messages, new_messages):
+        """
+        Merge historical messages with new messages to form complete conversation context.
+
+        Args:
+            historical_messages (list): List of historical messages from contextual history
+            new_messages (list): List of new messages to be added
+
+        Returns:
+            list: Merged and deduplicated messages in chronological order
+        """
+        try:
+            # Ensure both inputs are lists
+            if not isinstance(historical_messages, list):
+                historical_messages = []
+            if not isinstance(new_messages, list):
+                new_messages = []
+
+            # Create a set to track seen message content for deduplication
+            seen_messages = set()
+            merged_messages = []
+
+            # Helper function to create a unique key for message deduplication
+            def get_message_key(msg):
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    # Use role + content hash for deduplication
+                    content_hash = hash(str(msg["content"]).strip().lower())
+                    return f"{msg['role']}:{content_hash}"
+                return None
+
+            # Add historical messages first (they are already sorted chronologically)
+            for msg in historical_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Add new messages, avoiding duplicates
+            for msg in new_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Implement token length control (rough estimation)
+            # Assume average 4 characters per token, limit to ~8000 tokens (~32000 characters)
+            max_chars = 32000
+            total_chars = 0
+            final_messages = []
+
+            for msg in merged_messages:
+                msg_chars = len(str(msg.get("content", "")))
+                if total_chars + msg_chars <= max_chars:
+                    final_messages.append(msg)
+                    total_chars += msg_chars
+                else:
+                    # If we exceed the limit, stop adding more messages
+                    break
+
+            logging.info(f"Merged {len(historical_messages)} historical + {len(new_messages)} new messages into {len(final_messages)} unique messages")
+            return final_messages
+
+        except Exception as e:
+            logging.warning(f"Error merging historical context: {e}")
+            # Fallback to just new messages if merging fails
+            return new_messages
 
     async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None):
         """

@@ -133,7 +133,7 @@ class MemoryClient:
         Args:
             messages: A list of message dictionaries.
             **kwargs: Additional parameters such as user_id, agent_id, app_id,
-                      metadata, filters.
+                      metadata, filters, version (for API version control).
 
         Returns:
             A dictionary containing the API response.
@@ -988,6 +988,19 @@ class AsyncMemoryClient:
 
     @api_error_handler
     async def add(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        """Add a new memory asynchronously.
+
+        Args:
+            messages: A list of message dictionaries.
+            **kwargs: Additional parameters such as user_id, agent_id, app_id,
+                      metadata, filters, version (for API version control).
+
+        Returns:
+            A dictionary containing the API response.
+
+        Raises:
+            APIError: If the API request fails.
+        """
         kwargs = self._prepare_params(kwargs)
         if kwargs.get("output_format") != "v1.1":
             kwargs["output_format"] = "v1.1"

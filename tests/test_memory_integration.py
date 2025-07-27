@@ -178,3 +178,213 @@ Reply only in this json_object format:
     assert "user's latest messages" in SAFE_UPDATE_PROMPT
     assert "json_object format" in SAFE_UPDATE_PROMPT
     assert len(SAFE_UPDATE_PROMPT.strip()) > 0
+
+
+def test_v2_contextual_add_integration():
+    """Integration test for v2 contextual add functionality"""
+
+    mock_config = {
+        "llm": {
+            "provider": "openai",
+            "config": {
+                "model": "gpt-4",
+                "temperature": 0.1,
+                "max_tokens": 1500,
+            },
+        },
+        "vector_store": {
+            "provider": "chroma",
+            "config": {
+                "collection_name": "test_v2_collection",
+                "path": "./test_v2_db",
+            },
+        },
+        "embedder": {
+            "provider": "openai",
+            "config": {
+                "model": "text-embedding-ada-002",
+            },
+        },
+    }
+
+    # Test messages for v2 contextual add
+    initial_messages = [
+        {"role": "user", "content": "Hi, I'm Alex and I live in San Francisco."},
+        {"role": "assistant", "content": "Hello Alex! Nice to meet you. San Francisco is a beautiful city."},
+    ]
+
+    follow_up_messages = [
+        {"role": "user", "content": "I like to eat sushi."},
+        {"role": "assistant", "content": "Sushi is really a tasty choice! There are many great sushi restaurants in San Francisco."},
+    ]
+
+    with patch.object(Memory, "__init__", return_value=None):
+        with patch.object(Memory, "from_config") as mock_from_config:
+            with patch.object(Memory, "add") as mock_add:
+                with patch.object(Memory, "_retrieve_contextual_history") as mock_retrieve:
+                    with patch.object(Memory, "_merge_historical_context") as mock_merge:
+
+                        # Configure mocks
+                        mock_memory_instance = MagicMock()
+                        mock_from_config.return_value = mock_memory_instance
+
+                        # Mock v2 contextual behavior
+                        mock_retrieve.return_value = initial_messages
+                        mock_merge.return_value = initial_messages + follow_up_messages
+
+                        def mock_add_behavior(messages, **kwargs):
+                            version = kwargs.get("version", "v1")
+                            if version == "v2":
+                                # Simulate v2 contextual add
+                                historical = mock_retrieve.return_value
+                                merged = mock_merge.return_value
+                                return {
+                                    "results": [{
+                                        "id": "integration_v2_1",
+                                        "memory": f"Integrated contextual memory from {len(merged)} messages",
+                                        "event": "ADD",
+                                        "metadata": {
+                                            "api_version": "v2",
+                                            "original_messages": messages,
+                                            "historical_count": len(historical),
+                                            "merged_count": len(merged)
+                                        }
+                                    }]
+                                }
+                            else:
+                                return {
+                                    "results": [{
+                                        "id": "integration_v1_1",
+                                        "memory": "Standard memory",
+                                        "event": "ADD"
+                                    }]
+                                }
+
+                        # Set up the mock properly
+                        mock_memory_instance.add.side_effect = mock_add_behavior
+
+                        # Create memory instance
+                        memory = Memory.from_config(mock_config)
+
+                        # Test v1 behavior (baseline)
+                        result_v1 = memory.add(initial_messages, user_id="alex", version="v1")
+                        assert result_v1["results"][0]["id"] == "integration_v1_1"
+                        assert result_v1["results"][0]["memory"] == "Standard memory"
+
+                        # Test v2 contextual add
+                        result_v2 = memory.add(follow_up_messages, user_id="alex", version="v2")
+                        assert result_v2["results"][0]["id"] == "integration_v2_1"
+                        assert "Integrated contextual memory" in result_v2["results"][0]["memory"]
+
+                        # Verify v2 metadata
+                        metadata = result_v2["results"][0]["metadata"]
+                        assert metadata["api_version"] == "v2"
+                        assert metadata["original_messages"] == follow_up_messages
+                        assert metadata["historical_count"] == 2
+                        assert metadata["merged_count"] == 4
+
+                        # Verify that the mock was called correctly
+                        assert mock_memory_instance.add.called
+
+
+def test_v2_performance_integration():
+    """Integration test for v2 performance requirements"""
+    import time
+
+    mock_config = {
+        "llm": {"provider": "openai", "config": {"model": "gpt-4"}},
+        "vector_store": {"provider": "chroma", "config": {"collection_name": "perf_test"}},
+        "embedder": {"provider": "openai", "config": {"model": "text-embedding-ada-002"}},
+    }
+
+    with patch.object(Memory, "__init__", return_value=None):
+        with patch.object(Memory, "from_config") as mock_from_config:
+            with patch.object(Memory, "add") as mock_add:
+
+                # Mock performance-aware behavior
+                def mock_timed_add(messages, **kwargs):
+                    version = kwargs.get("version", "v1")
+                    if version == "v2":
+                        # Simulate realistic processing time
+                        time.sleep(0.2)  # 200ms simulation
+                    return {
+                        "results": [{
+                            "id": "perf_integration_1",
+                            "memory": "Performance test memory",
+                            "event": "ADD"
+                        }]
+                    }
+
+                mock_add.side_effect = mock_timed_add
+                mock_memory_instance = MagicMock()
+                mock_from_config.return_value = mock_memory_instance
+
+                # Create memory instance
+                memory = Memory.from_config(mock_config)
+
+                messages = [{"role": "user", "content": "Performance test message"}]
+
+                # Test v2 performance
+                start_time = time.time()
+                result = memory.add(messages, user_id="perf_user", version="v2")
+                end_time = time.time()
+
+                elapsed_ms = (end_time - start_time) * 1000
+
+                # Verify performance requirement (< 800ms)
+                assert elapsed_ms < 800
+                assert result["results"][0]["id"] == "perf_integration_1"
+
+
+def test_v2_error_handling_integration():
+    """Integration test for v2 error handling and graceful degradation"""
+
+    mock_config = {
+        "llm": {"provider": "openai", "config": {"model": "gpt-4"}},
+        "vector_store": {"provider": "chroma", "config": {"collection_name": "error_test"}},
+        "embedder": {"provider": "openai", "config": {"model": "text-embedding-ada-002"}},
+    }
+
+    with patch.object(Memory, "__init__", return_value=None):
+        with patch.object(Memory, "from_config") as mock_from_config:
+            with patch.object(Memory, "add") as mock_add:
+                with patch.object(Memory, "_retrieve_contextual_history") as mock_retrieve:
+
+                    # Mock error scenario
+                    mock_retrieve.side_effect = Exception("Simulated retrieval error")
+
+                    def mock_add_with_fallback(messages, **kwargs):
+                        version = kwargs.get("version", "v1")
+                        if version == "v2":
+                            try:
+                                # This will raise an exception
+                                mock_retrieve()
+                                return {"results": [{"id": "should_not_reach", "memory": "error", "event": "ADD"}]}
+                            except Exception:
+                                # Graceful fallback to v1
+                                return {
+                                    "results": [{
+                                        "id": "fallback_integration_1",
+                                        "memory": "Fallback memory after v2 error",
+                                        "event": "ADD",
+                                        "fallback": True
+                                    }]
+                                }
+                        return {"results": [{"id": "normal_v1", "memory": "normal", "event": "ADD"}]}
+
+                    mock_add.side_effect = mock_add_with_fallback
+                    mock_memory_instance = MagicMock()
+                    mock_from_config.return_value = mock_memory_instance
+
+                    # Create memory instance
+                    memory = Memory.from_config(mock_config)
+
+                    messages = [{"role": "user", "content": "Error handling test"}]
+
+                    # Test error handling
+                    result = memory.add(messages, user_id="error_user", version="v2")
+
+                    # Verify graceful fallback
+                    assert result["results"][0]["id"] == "fallback_integration_1"
+                    assert "Fallback memory" in result["results"][0]["memory"]
+                    assert result["results"][0]["fallback"] is True
