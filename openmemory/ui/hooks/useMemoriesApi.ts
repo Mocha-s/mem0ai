@@ -1,9 +1,12 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { Memory, Client, Category } from '@/components/types';
 import { useDispatch, useSelector } from 'react-redux';
 import { AppDispatch, RootState } from '@/store/store';
 import { setAccessLogs, setMemoriesSuccess, setSelectedMemory, setRelatedMemories } from '@/store/memoriesSlice';
+import { UnifiedAPIClient } from '@/lib/api-adapter';
+import { createUnifiedAPIConfig } from '@/lib/api-adapter/config';
+import type { UnifiedMemory, UnifiedSearchOptions, UnifiedMemoryOptions } from '@/lib/types/unified';
 
 // Define the new simplified memory type
 export interface SimpleMemory {
@@ -106,6 +109,16 @@ export const useMemoriesApi = (): UseMemoriesApiReturn => {
 
   const URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8765";
 
+  // Initialize unified API client
+  const unifiedClient = useMemo(() => {
+    const config = createUnifiedAPIConfig({
+      openMemoryConfig: {
+        baseUrl: URL,
+      },
+    });
+    return new UnifiedAPIClient(config);
+  }, [URL]);
+
   const fetchMemories = useCallback(async (
     query?: string,
     page: number = 1,
@@ -121,37 +134,36 @@ export const useMemoriesApi = (): UseMemoriesApiReturn => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await axios.post<ApiResponse>(
-        `${URL}/api/v1/memories/filter`,
-        {
-          user_id: user_id,
-          page: page,
-          size: size,
-          search_query: query,
-          app_ids: filters?.apps,
-          category_ids: filters?.categories,
-          sort_column: filters?.sortColumn?.toLowerCase(),
-          sort_direction: filters?.sortDirection,
-          show_archived: filters?.showArchived
-        }
-      );
+      // Use unified API client
+      const searchOptions: UnifiedSearchOptions = {
+        source: 'openmemory', // Maintain backward compatibility
+        user_id: user_id,
+        query: query,
+        page: page,
+        page_size: size,
+        categories: filters?.categories,
+      };
 
-      const adaptedMemories: Memory[] = response.data.items.map((item: ApiMemoryItem) => ({
-        id: item.id,
-        memory: item.content,
-        created_at: new Date(item.created_at).getTime(),
-        state: item.state as "active" | "paused" | "archived" | "deleted",
-        metadata: item.metadata_,
-        categories: item.categories as Category[],
-        client: 'api',
-        app_name: item.app_name
+      const response = await unifiedClient.getMemories(searchOptions);
+
+      // Transform unified memories back to legacy Memory format for compatibility
+      const adaptedMemories: Memory[] = response.data.map((unifiedMemory) => ({
+        id: unifiedMemory.id,
+        memory: unifiedMemory.content,
+        created_at: new Date(unifiedMemory.created_at).getTime(),
+        state: unifiedMemory.state as "active" | "paused" | "archived" | "deleted",
+        metadata: unifiedMemory.metadata || {},
+        categories: unifiedMemory.categories as Category[],
+        client: (unifiedMemory.client as Client) || 'api',
+        app_name: unifiedMemory.app_name || 'unknown'
       }));
+
       setIsLoading(false);
       dispatch(setMemoriesSuccess(adaptedMemories));
       return {
         memories: adaptedMemories,
-        total: response.data.total,
-        pages: response.data.pages
+        total: adaptedMemories.length, // Unified response doesn't always have total
+        pages: Math.ceil(adaptedMemories.length / size)
       };
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to fetch memories';
@@ -159,17 +171,17 @@ export const useMemoriesApi = (): UseMemoriesApiReturn => {
       setIsLoading(false);
       throw new Error(errorMessage);
     }
-  }, [user_id, dispatch]);
+  }, [user_id, dispatch, unifiedClient]);
 
   const createMemory = async (text: string): Promise<void> => {
     try {
-      const memoryData = {
+      const options: UnifiedMemoryOptions = {
+        source: 'openmemory', // Maintain backward compatibility
         user_id: user_id,
-        text: text,
-        infer: false,
-        app: "openmemory",
-      }
-      await axios.post<ApiMemoryItem>(`${URL}/api/v1/memories/`, memoryData);
+        app_name: "openmemory",
+      };
+
+      await unifiedClient.createMemory(text, options);
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to create memory';
       setError(errorMessage);
@@ -180,9 +192,12 @@ export const useMemoriesApi = (): UseMemoriesApiReturn => {
 
   const deleteMemories = async (memory_ids: string[]) => {
     try {
-      await axios.delete(`${URL}/api/v1/memories/`, {
-        data: { memory_ids, user_id }
-      });
+      const options: UnifiedMemoryOptions = {
+        source: 'openmemory', // Maintain backward compatibility
+        user_id: user_id,
+      };
+
+      await unifiedClient.deleteMemories(memory_ids, options);
       dispatch(setMemoriesSuccess(memories.filter((memory: Memory) => !memory_ids.includes(memory.id))));
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to delete memories';
@@ -199,11 +214,25 @@ export const useMemoriesApi = (): UseMemoriesApiReturn => {
     setIsLoading(true);
     setError(null);
     try {
-      const response = await axios.get<SimpleMemory>(
-        `${URL}/api/v1/memories/${memoryId}?user_id=${user_id}`
-      );
+      const options: UnifiedMemoryOptions = {
+        source: 'openmemory', // Maintain backward compatibility
+        user_id: user_id,
+      };
+
+      const response = await unifiedClient.getMemoryById(memoryId, options);
+
+      // Transform to SimpleMemory format for compatibility
+      const simpleMemory: SimpleMemory = {
+        id: response.data.id,
+        text: response.data.content,
+        created_at: response.data.created_at,
+        state: response.data.state || 'active',
+        categories: response.data.categories,
+        app_name: response.data.app_name || 'unknown',
+      };
+
       setIsLoading(false);
-      dispatch(setSelectedMemory(response.data));
+      dispatch(setSelectedMemory(simpleMemory));
     } catch (err: any) {
       const errorMessage = err.message || 'Failed to fetch memory';
       setError(errorMessage);
@@ -271,11 +300,12 @@ export const useMemoriesApi = (): UseMemoriesApiReturn => {
     setIsLoading(true);
     setError(null);
     try {
-      await axios.put(`${URL}/api/v1/memories/${memoryId}`, {
-        memory_id: memoryId,
-        memory_content: content,
-        user_id: user_id
-      });
+      const options: UnifiedMemoryOptions = {
+        source: 'openmemory', // Maintain backward compatibility
+        user_id: user_id,
+      };
+
+      await unifiedClient.updateMemory(memoryId, content, options);
       setIsLoading(false);
       setHasUpdates(hasUpdates + 1);
     } catch (err: any) {

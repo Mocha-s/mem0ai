@@ -200,83 +200,348 @@ interface Mem0ServiceRegistry {
 
 #### 4.2.1 页面结构重新设计
 
-**专注Mem0的页面架构**
+**完整的Mem0生态页面架构**
 ```
 mem0-ui/
 ├── app/
 │   ├── dashboard/          # Mem0总览仪表板
+│   │   ├── page.tsx        # 仪表板主页
+│   │   ├── components/     # 仪表板专用组件
+│   │   └── widgets/        # 仪表板小部件
 │   ├── memories/           # 记忆管理（基于Mem0 Memory API）
+│   │   ├── page.tsx        # 记忆管理主页
 │   │   ├── browser/        # 记忆浏览器
 │   │   ├── search/         # 高级搜索
-│   │   └── analytics/      # 记忆分析
+│   │   ├── analytics/      # 记忆分析
+│   │   ├── graph/          # 图记忆可视化
+│   │   ├── [id]/           # 动态路由 - 记忆详情
+│   │   │   ├── page.tsx    # 记忆详情页
+│   │   │   ├── history/    # 记忆历史
+│   │   │   └── edit/       # 编辑记忆
+│   │   └── components/     # 记忆管理组件
+│   ├── users/              # 用户管理
+│   │   ├── page.tsx        # 用户列表
+│   │   ├── [id]/           # 用户详情
+│   │   └── components/     # 用户管理组件
 │   ├── config/             # Mem0配置管理
+│   │   ├── page.tsx        # 配置管理主页
 │   │   ├── memory/         # 记忆系统配置
 │   │   ├── llm/            # LLM提供商配置
 │   │   ├── embeddings/     # 嵌入模型配置
-│   │   └── advanced/       # 高级配置（自定义指令等）
+│   │   ├── vector-store/   # 向量存储配置
+│   │   ├── graph/          # 图数据库配置
+│   │   ├── advanced/       # 高级配置
+│   │   └── components/     # 配置管理组件
+│   ├── instructions/       # 自定义指令管理
+│   │   ├── page.tsx        # 指令管理主页
+│   │   ├── templates/      # 指令模板库
+│   │   ├── editor/         # 指令编辑器
+│   │   ├── test/           # 指令测试
+│   │   └── components/     # 指令管理组件
 │   ├── mcp/                # MCP服务管理
+│   │   ├── page.tsx        # MCP管理主页
 │   │   ├── servers/        # MCP服务器管理
-│   │   ├── tools/          # MCP工具调用
-│   │   └── debug/          # MCP调试控制台
-│   └── monitoring/         # 系统监控
-│       ├── performance/    # 性能监控
-│       ├── health/         # 健康状态
-│       └── logs/           # 日志查看
+│   │   │   ├── page.tsx    # 服务器列表
+│   │   │   ├── [id]/       # 服务器详情
+│   │   │   └── components/ # 服务器管理组件
+│   │   ├── tools/          # MCP工具管理
+│   │   │   ├── page.tsx    # 工具列表
+│   │   │   ├── [name]/     # 工具详情
+│   │   │   └── components/ # 工具管理组件
+│   │   ├── debug/          # MCP调试控制台
+│   │   ├── logs/           # MCP日志查看
+│   │   └── components/     # MCP专用组件
+│   ├── monitoring/         # 系统监控
+│   │   ├── page.tsx        # 监控主页
+│   │   ├── performance/    # 性能监控
+│   │   ├── health/         # 健康状态
+│   │   ├── logs/           # 系统日志
+│   │   ├── alerts/         # 告警管理
+│   │   └── components/     # 监控组件
+│   ├── batch/              # 批量操作
+│   │   ├── page.tsx        # 批量操作主页
+│   │   ├── update/         # 批量更新
+│   │   ├── delete/         # 批量删除
+│   │   ├── import/         # 批量导入
+│   │   ├── export/         # 批量导出
+│   │   └── components/     # 批量操作组件
+│   ├── settings/           # 系统设置
+│   │   ├── page.tsx        # 设置主页
+│   │   ├── general/        # 通用设置
+│   │   ├── security/       # 安全设置
+│   │   ├── backup/         # 备份设置
+│   │   ├── about/          # 关于系统
+│   │   └── components/     # 设置组件
+│   ├── docs/               # API文档
+│   │   ├── page.tsx        # 文档主页
+│   │   ├── api/            # API参考
+│   │   └── guides/         # 使用指南
+│   └── help/               # 帮助中心
+│       ├── page.tsx        # 帮助主页
+│       └── components/     # 帮助组件
 ├── components/
+│   ├── ui/                 # 基础UI组件
+│   │   ├── Button/         # 按钮组件
+│   │   ├── Input/          # 输入组件
+│   │   ├── Modal/          # 模态框组件
+│   │   ├── Table/          # 表格组件
+│   │   ├── Chart/          # 图表组件
+│   │   └── Layout/         # 布局组件
 │   ├── mem0/               # Mem0专用组件
 │   │   ├── MemoryCard/     # 记忆卡片组件
+│   │   ├── MemoryList/     # 记忆列表组件
+│   │   ├── MemoryEditor/   # 记忆编辑器
+│   │   ├── MemorySearch/   # 记忆搜索组件
 │   │   ├── ConfigForm/     # 配置表单组件
-│   │   └── SearchBox/      # 高级搜索组件
+│   │   ├── SearchBox/      # 高级搜索组件
+│   │   ├── GraphVisualization/ # 图可视化组件
+│   │   │   ├── EntityNode/ # 实体节点
+│   │   │   ├── RelationshipEdge/ # 关系边
+│   │   │   └── GraphCanvas/ # 图画布
+│   │   └── BatchOperations/ # 批量操作组件
 │   ├── mcp/                # MCP专用组件
-│   └── monitoring/         # 监控组件
+│   │   ├── ServerCard/     # 服务器卡片
+│   │   ├── ServerStatus/   # 服务器状态
+│   │   ├── ToolList/       # 工具列表
+│   │   ├── ToolExecutor/   # 工具执行器
+│   │   ├── DebugConsole/   # 调试控制台
+│   │   └── ConnectionTest/ # 连接测试
+│   ├── monitoring/         # 监控组件
+│   │   ├── MetricsChart/   # 指标图表
+│   │   ├── HealthStatus/   # 健康状态
+│   │   ├── LogViewer/      # 日志查看器
+│   │   ├── AlertPanel/     # 告警面板
+│   │   └── PerformanceGrid/ # 性能网格
+│   ├── instructions/       # 指令管理组件
+│   │   ├── InstructionEditor/ # 指令编辑器
+│   │   ├── TemplateLibrary/ # 模板库
+│   │   ├── InstructionTest/ # 指令测试
+│   │   └── PromptPreview/  # 提示预览
+│   └── common/             # 通用组件
+│       ├── Header/         # 页面头部
+│       ├── Sidebar/        # 侧边栏
+│       ├── Footer/         # 页面底部
+│       ├── Loading/        # 加载组件
+│       ├── Error/          # 错误组件
+│       └── Notification/   # 通知组件
 └── lib/
     ├── mem0-client/        # Mem0 API客户端
+    │   ├── index.ts        # 客户端入口
+    │   ├── types.ts        # 类型定义
+    │   └── utils.ts        # 工具函数
     ├── mcp-client/         # MCP API客户端
-    └── config/             # 配置管理工具
+    │   ├── index.ts        # MCP客户端
+    │   ├── protocol.ts     # MCP协议处理
+    │   └── transport.ts    # 传输层
+    ├── config/             # 配置管理工具
+    │   ├── manager.ts      # 配置管理器
+    │   ├── validator.ts    # 配置验证
+    │   └── sync.ts         # 配置同步
+    ├── monitoring/         # 监控工具
+    │   ├── metrics.ts      # 指标收集
+    │   ├── health.ts       # 健康检查
+    │   └── alerts.ts       # 告警处理
+    ├── utils/              # 工具函数
+    │   ├── api.ts          # API工具
+    │   ├── format.ts       # 格式化工具
+    │   ├── validation.ts   # 验证工具
+    │   └── storage.ts      # 存储工具
+    └── hooks/              # React Hooks
+        ├── useMemories.ts  # 记忆管理Hook
+        ├── useMCP.ts       # MCP服务Hook
+        ├── useConfig.ts    # 配置管理Hook
+        └── useMonitoring.ts # 监控Hook
 ```
 
 #### 4.2.2 状态管理重构
 
 **Redux Store专为Mem0设计**
 ```typescript
+// 核心数据类型定义
+interface Message {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
+interface MemoryOptions {
+  user_id?: string;
+  agent_id?: string;
+  run_id?: string;
+  version?: 'v1' | 'v2';
+  metadata?: Record<string, any>;
+  custom_categories?: Array<{name: string; description: string}>;
+  infer?: boolean;
+  memory_type?: string;
+  prompt?: string;
+  includes?: string;
+  excludes?: string;
+  timestamp?: number;
+}
+
+interface SearchOptions extends MemoryOptions {
+  limit?: number;
+  filters?: Record<string, any>;
+  threshold?: number;
+  keyword_search?: boolean;
+  rerank?: boolean;
+  filter_memories?: boolean;
+  retrieval_criteria?: Array<Record<string, any>>;
+  top_k?: number;
+  categories?: string[];
+  fields?: string[];
+}
+
+interface Memory {
+  id: string;
+  memory: string;
+  messages?: Message[];
+  event?: 'ADD' | 'UPDATE' | 'DELETE' | 'NOOP';
+  user_id?: string;
+  agent_id?: string;
+  run_id?: string;
+  hash?: string;
+  categories?: string[];
+  created_at?: string;
+  updated_at?: string;
+  memory_type?: string;
+  score?: number;
+  metadata?: Record<string, any>;
+}
+
+interface MemoryHistory {
+  id: string;
+  memory_id: string;
+  input: Message[];
+  old_memory: string | null;
+  new_memory: string | null;
+  user_id: string;
+  categories: string[];
+  event: 'ADD' | 'UPDATE' | 'DELETE' | 'NOOP';
+  created_at: string;
+  updated_at: string;
+}
+
+interface MemoryUpdateBody {
+  memoryId: string;
+  text: string;
+}
+
+interface User {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  total_memories: number;
+  owner: string;
+  type: string;
+}
+
+interface AllUsers {
+  count: number;
+  results: User[];
+  next: any;
+  previous: any;
+}
+
+// Redux状态接口
 interface Mem0RootState {
   // Mem0核心状态
   memories: {
     items: Memory[];
-    filters: MemoryFilters;
-    searchState: SearchState;
-    pagination: PaginationState;
+    filters: SearchOptions;
+    searchState: {
+      query: string;
+      results: Memory[];
+      loading: boolean;
+      error?: string;
+    };
+    pagination: {
+      page: number;
+      pageSize: number;
+      total: number;
+      hasNext: boolean;
+      hasPrevious: boolean;
+    };
+    selectedMemory?: Memory;
+    history: MemoryHistory[];
   };
-  
-  // Mem0配置状态  
+
+  // Mem0配置状态
   mem0Config: {
-    memory: MemoryConfig;
-    llm: LLMConfig;
-    embeddings: EmbeddingConfig;
-    graph?: GraphConfig;
-    customInstructions: CustomInstructions;
+    memory: {
+      provider: 'qdrant' | 'chroma' | 'pinecone' | 'faiss';
+      config: VectorStoreConfig;
+    };
+    llm: {
+      provider: 'openai' | 'anthropic' | 'groq' | 'ollama' | 'local';
+      config: LLMConfig;
+    };
+    embeddings: {
+      provider: 'openai' | 'huggingface' | 'ollama' | 'local';
+      config: EmbeddingConfig;
+    };
+    graph?: {
+      provider: 'neo4j' | 'memgraph' | 'neptune';
+      config: GraphConfig;
+    };
+    customInstructions: {
+      fact_extraction?: string;
+      memory_update?: string;
+      search_reranking?: string;
+    };
+    version: 'v1' | 'v2';
   };
-  
+
+  // 用户管理状态
+  users: {
+    items: User[];
+    loading: boolean;
+    error?: string;
+  };
+
   // MCP服务状态
   mcp: {
     servers: MCPServer[];
     activeServer?: string;
     tools: MCPTool[];
     connections: MCPConnection[];
+    status: 'connected' | 'disconnected' | 'connecting' | 'error';
   };
-  
+
   // 监控状态
   monitoring: {
-    performance: PerformanceMetrics;
-    health: HealthStatus;
+    performance: {
+      responseTime: number[];
+      throughput: number[];
+      errorRate: number[];
+      uptime: number;
+    };
+    health: {
+      mem0Core: 'healthy' | 'unhealthy' | 'unknown';
+      vectorStore: 'healthy' | 'unhealthy' | 'unknown';
+      llmProvider: 'healthy' | 'unhealthy' | 'unknown';
+      mcpServer: 'healthy' | 'unhealthy' | 'unknown';
+    };
     logs: LogEntry[];
   };
-  
+
   // UI状态
   ui: {
-    activeView: ViewType;
-    modals: ModalState;
-    notifications: Notification[];
+    activeView: 'dashboard' | 'memories' | 'config' | 'mcp' | 'monitoring';
+    modals: {
+      addMemory: boolean;
+      editMemory: boolean;
+      deleteConfirm: boolean;
+      configEdit: boolean;
+    };
+    notifications: Array<{
+      id: string;
+      type: 'success' | 'error' | 'warning' | 'info';
+      message: string;
+      timestamp: string;
+    }>;
+    loading: boolean;
+    error?: string;
   };
 }
 ```
@@ -288,65 +553,350 @@ interface Mem0RootState {
 class Mem0APIClient {
   private baseURL: string;
   private config: Mem0Config;
-  
-  // 记忆管理API
-  async getMemories(filters: MemoryFilters): Promise<Memory[]> {
-    return this.request('/api/v1/memories', { params: filters });
+  private headers: Record<string, string>;
+
+  constructor(baseURL: string, config: Mem0Config) {
+    this.baseURL = baseURL;
+    this.config = config;
+    this.headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Token ${config.apiKey}`
+    };
   }
-  
-  async addMemory(data: AddMemoryRequest): Promise<AddMemoryResponse> {
-    return this.request('/api/v1/memories', { 
-      method: 'POST', 
-      data: {
-        ...data,
-        version: 'v2', // 默认使用v2版本支持上下文
-        timestamp: data.timestamp, // 支持自定义时间戳
-      }
-    });
+
+  // 记忆管理API - 完整CRUD操作
+
+  /**
+   * 获取记忆列表 - 支持v1/v2版本
+   */
+  async getAll(options: MemoryOptions = {}): Promise<Memory[]> {
+    const version = options.version || 'v1';
+
+    if (version === 'v2') {
+      // v2版本使用POST请求
+      return this.request('/v2/memories/', {
+        method: 'POST',
+        data: options
+      });
+    } else {
+      // v1版本使用GET请求
+      const params = new URLSearchParams(this._prepareParams(options));
+      return this.request(`/v1/memories/?${params}`);
+    }
   }
-  
-  async searchMemories(query: SearchRequest): Promise<SearchResponse> {
-    return this.request('/api/v1/memories/search', {
+
+  /**
+   * 添加记忆 - 支持v1/v2版本和高级功能
+   */
+  async add(messages: Message[], options: MemoryOptions = {}): Promise<Memory[]> {
+    const version = options.version || 'v1';
+    const endpoint = version === 'v2' ? '/v2/memories/' : '/v1/memories/';
+
+    return this.request(endpoint, {
       method: 'POST',
       data: {
-        ...query,
-        keyword_search: true,
-        rerank: true,
-        filter_memories: true,
-        retrieval_criteria: query.criteria, // 支持自定义检索标准
+        messages,
+        ...options,
+        // 支持高级功能
+        custom_categories: options.custom_categories,
+        infer: options.infer ?? true,
+        timestamp: options.timestamp,
+        includes: options.includes,
+        excludes: options.excludes
       }
     });
   }
-  
-  // 配置管理API
-  async getConfig(): Promise<Mem0Config> {
-    return this.request('/api/v1/config');
+
+  /**
+   * 搜索记忆 - 支持高级检索功能
+   */
+  async search(query: string, options: SearchOptions = {}): Promise<Memory[]> {
+    const version = options.version || 'v1';
+    const endpoint = version === 'v2' ? '/v2/memories/search/' : '/v1/memories/search/';
+
+    return this.request(endpoint, {
+      method: 'POST',
+      data: {
+        query,
+        ...options,
+        // 高级检索功能
+        keyword_search: options.keyword_search ?? false,
+        rerank: options.rerank ?? false,
+        filter_memories: options.filter_memories ?? false,
+        retrieval_criteria: options.retrieval_criteria,
+        threshold: options.threshold,
+        limit: options.limit ?? 100
+      }
+    });
   }
-  
+
+  /**
+   * 获取单个记忆
+   */
+  async get(memoryId: string): Promise<Memory> {
+    return this.request(`/v1/memories/${memoryId}/`);
+  }
+
+  /**
+   * 更新记忆
+   */
+  async update(memoryId: string, text: string): Promise<Memory[]> {
+    return this.request(`/v1/memories/${memoryId}/`, {
+      method: 'PUT',
+      data: { text }
+    });
+  }
+
+  /**
+   * 删除单个记忆
+   */
+  async delete(memoryId: string): Promise<{message: string}> {
+    return this.request(`/v1/memories/${memoryId}/`, { method: 'DELETE' });
+  }
+
+  /**
+   * 批量删除记忆
+   */
+  async deleteAll(options: MemoryOptions = {}): Promise<{message: string}> {
+    const params = new URLSearchParams(this._prepareParams(options));
+    return this.request(`/v1/memories/?${params}`, { method: 'DELETE' });
+  }
+
+  /**
+   * 获取记忆历史
+   */
+  async history(memoryId: string): Promise<MemoryHistory[]> {
+    return this.request(`/v1/memories/${memoryId}/history/`);
+  }
+
+  // 批量操作API
+
+  /**
+   * 批量更新记忆
+   */
+  async batchUpdate(memories: MemoryUpdateBody[]): Promise<string> {
+    const memoriesData = memories.map(memory => ({
+      memory_id: memory.memoryId,
+      text: memory.text
+    }));
+
+    return this.request('/v1/batch/', {
+      method: 'PUT',
+      data: { memories: memoriesData }
+    });
+  }
+
+  /**
+   * 批量删除记忆
+   */
+  async batchDelete(memoryIds: string[]): Promise<string> {
+    const memories = memoryIds.map(id => ({ memory_id: id }));
+    return this.request('/v1/batch/', {
+      method: 'DELETE',
+      data: { memories }
+    });
+  }
+
+  // 用户管理API
+
+  /**
+   * 获取用户列表
+   */
+  async getUsers(): Promise<AllUsers> {
+    return this.request('/v1/entities/');
+  }
+
+  /**
+   * 删除用户及其所有记忆
+   */
+  async deleteUsers(params: {
+    user_id?: string;
+    agent_id?: string;
+    app_id?: string;
+    run_id?: string;
+  } = {}): Promise<{message: string}> {
+    const { user_id, agent_id, app_id, run_id } = params;
+
+    if (user_id) {
+      return this.request(`/v2/entities/user/${user_id}/`, { method: 'DELETE' });
+    } else if (agent_id) {
+      return this.request(`/v2/entities/agent/${agent_id}/`, { method: 'DELETE' });
+    } else if (app_id) {
+      return this.request(`/v2/entities/app/${app_id}/`, { method: 'DELETE' });
+    } else if (run_id) {
+      return this.request(`/v2/entities/run/${run_id}/`, { method: 'DELETE' });
+    }
+
+    throw new Error('At least one entity ID must be provided');
+  }
+
+  // 配置管理API
+
+  /**
+   * 获取Mem0配置
+   */
+  async getConfig(): Promise<Mem0Config> {
+    return this.request('/v1/config/');
+  }
+
+  /**
+   * 更新Mem0配置
+   */
   async updateConfig(config: Partial<Mem0Config>): Promise<void> {
-    return this.request('/api/v1/config', { method: 'PUT', data: config });
+    return this.request('/v1/config/', { method: 'PUT', data: config });
+  }
+
+  /**
+   * 更新项目配置（自定义指令等）
+   */
+  async updateProject(prompts: {
+    custom_instructions?: string;
+    custom_categories?: Array<{name: string; description: string}>;
+  }): Promise<Record<string, any>> {
+    return this.request('/api/v1/orgs/organizations/{org_id}/projects/{project_id}/', {
+      method: 'PATCH',
+      data: prompts
+    });
+  }
+
+  // 工具方法
+
+  private _prepareParams(options: Record<string, any>): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(options)
+        .filter(([_, v]) => v != null)
+        .map(([k, v]) => [k, String(v)])
+    );
+  }
+
+  private async request(endpoint: string, options: {
+    method?: string;
+    data?: any;
+    params?: Record<string, any>;
+  } = {}): Promise<any> {
+    const url = `${this.baseURL}${endpoint}`;
+    const { method = 'GET', data, params } = options;
+
+    const config: RequestInit = {
+      method,
+      headers: this.headers
+    };
+
+    if (data) {
+      config.body = JSON.stringify(data);
+    }
+
+    const response = await fetch(url, config);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    return response.json();
   }
 }
 ```
 
-#### 4.2.3 路由设计
+#### 4.2.4 路由设计
 
-**页面路由扩展**
+**完整页面路由架构**
 ```typescript
-// 现有路由保留
-'/': Dashboard
-'/memories': 记忆管理
-'/apps': 应用管理  
-'/settings': 设置
+// 主要页面路由
+const routes = {
+  // 首页和仪表板
+  '/': 'Dashboard - Mem0生态系统总览',
 
-// 新增路由
-'/services': 服务总览
-'/services/mem0-core': Mem0核心服务管理
-'/services/mcp': MCP服务管理
-'/monitoring': 系统监控
-'/advanced': 高级功能
-'/advanced/custom-instructions': 自定义指令管理
-'/advanced/retrieval': 高级检索配置
+  // 记忆管理模块
+  '/memories': 'MemoryManagement - 记忆管理主页',
+  '/memories/browser': 'MemoryBrowser - 记忆浏览器',
+  '/memories/search': 'MemorySearch - 高级搜索',
+  '/memories/analytics': 'MemoryAnalytics - 记忆分析',
+  '/memories/graph': 'GraphMemory - 图记忆可视化',
+  '/memories/:id': 'MemoryDetail - 记忆详情页',
+  '/memories/:id/history': 'MemoryHistory - 记忆历史',
+  '/memories/:id/edit': 'MemoryEdit - 编辑记忆',
+
+  // 用户管理
+  '/users': 'UserManagement - 用户管理',
+  '/users/:id': 'UserDetail - 用户详情',
+
+  // 配置管理模块
+  '/config': 'ConfigManagement - 配置管理主页',
+  '/config/memory': 'MemoryConfig - 记忆系统配置',
+  '/config/llm': 'LLMConfig - LLM提供商配置',
+  '/config/embeddings': 'EmbeddingConfig - 嵌入模型配置',
+  '/config/vector-store': 'VectorStoreConfig - 向量存储配置',
+  '/config/graph': 'GraphConfig - 图数据库配置',
+  '/config/advanced': 'AdvancedConfig - 高级配置',
+
+  // 自定义指令管理
+  '/instructions': 'CustomInstructions - 自定义指令管理',
+  '/instructions/templates': 'InstructionTemplates - 指令模板库',
+  '/instructions/editor': 'InstructionEditor - 指令编辑器',
+  '/instructions/test': 'InstructionTest - 指令测试',
+
+  // MCP服务管理模块
+  '/mcp': 'MCPManagement - MCP服务管理主页',
+  '/mcp/servers': 'MCPServers - MCP服务器管理',
+  '/mcp/servers/:id': 'MCPServerDetail - MCP服务器详情',
+  '/mcp/tools': 'MCPTools - MCP工具管理',
+  '/mcp/tools/:name': 'MCPToolDetail - MCP工具详情',
+  '/mcp/debug': 'MCPDebug - MCP调试控制台',
+  '/mcp/logs': 'MCPLogs - MCP日志查看',
+
+  // 系统监控模块
+  '/monitoring': 'SystemMonitoring - 系统监控主页',
+  '/monitoring/performance': 'PerformanceMonitoring - 性能监控',
+  '/monitoring/health': 'HealthCheck - 健康状态检查',
+  '/monitoring/logs': 'SystemLogs - 系统日志',
+  '/monitoring/alerts': 'AlertManagement - 告警管理',
+
+  // 批量操作
+  '/batch': 'BatchOperations - 批量操作',
+  '/batch/update': 'BatchUpdate - 批量更新',
+  '/batch/delete': 'BatchDelete - 批量删除',
+  '/batch/import': 'BatchImport - 批量导入',
+  '/batch/export': 'BatchExport - 批量导出',
+
+  // 系统设置
+  '/settings': 'SystemSettings - 系统设置',
+  '/settings/general': 'GeneralSettings - 通用设置',
+  '/settings/security': 'SecuritySettings - 安全设置',
+  '/settings/backup': 'BackupSettings - 备份设置',
+  '/settings/about': 'AboutSystem - 关于系统',
+
+  // API文档和帮助
+  '/docs': 'Documentation - API文档',
+  '/docs/api': 'APIReference - API参考',
+  '/docs/guides': 'UserGuides - 使用指南',
+  '/help': 'HelpCenter - 帮助中心'
+};
+
+// 路由守卫和权限控制
+const routeGuards = {
+  // 需要验证的路由
+  protected: [
+    '/config/*',
+    '/mcp/servers/*',
+    '/settings/*',
+    '/batch/*'
+  ],
+
+  // 管理员专用路由
+  admin: [
+    '/monitoring/*',
+    '/settings/security',
+    '/users'
+  ]
+};
+
+// 动态路由参数
+interface RouteParams {
+  memoryId?: string;
+  userId?: string;
+  serverId?: string;
+  toolName?: string;
+}
 ```
 
 ### 4.3 API适配层设计
@@ -678,23 +1228,49 @@ interface MonitoringDashboard {
 
 **任务清单**：
 1. **Memory核心功能集成**
-   - 适配Mem0 Memory API（支持v1/v2版本）
+   - 适配完整的Mem0 Memory API（支持v1/v2版本）
+   - 实现完整CRUD操作（add, get, getAll, update, delete, deleteAll）
    - 实现高级记忆功能（自定义指令、时间戳记忆、上下文记忆）
-   - 构建记忆管理专用UI组件
+   - 构建记忆管理专用UI组件（MemoryCard, MemoryList, MemoryEditor）
+   - 实现记忆历史追踪和版本管理
 
-2. **LLM和Embedding配置管理**
-   - 多Provider配置界面（OpenAI、Anthropic、本地模型）
-   - 嵌入模型配置和切换
+2. **高级搜索和检索功能**
+   - 实现多模式搜索（向量搜索、关键词搜索、混合搜索）
+   - 集成高级检索功能（keyword_search, rerank, filter_memories）
+   - 实现自定义检索标准（retrieval_criteria）
+   - 构建高级搜索界面和结果展示
+
+3. **批量操作功能**
+   - 实现批量更新（batchUpdate）和批量删除（batchDelete）
+   - 构建批量操作界面和进度跟踪
+   - 实现批量导入导出功能
+   - 添加操作确认和错误处理
+
+4. **用户管理功能**
+   - 实现用户列表获取（getUsers）
+   - 实现用户删除功能（deleteUsers）
+   - 构建用户管理界面
+   - 实现用户记忆统计和分析
+
+5. **LLM和Embedding配置管理**
+   - 多Provider配置界面（OpenAI、Anthropic、Groq、Ollama、本地模型）
+   - 嵌入模型配置和切换（OpenAI、HuggingFace、Ollama、本地嵌入）
    - 性能监控和质量评估
+   - 配置验证和测试功能
 
-3. **向量存储和图数据库管理**
-   - 向量数据库配置（Qdrant、Chroma、Pinecone）
+6. **向量存储和图数据库管理**
+   - 向量数据库配置（Qdrant、Chroma、Pinecone、FAISS）
    - 图数据库连接管理（Neo4j、Memgraph、Neptune）
+   - 图记忆可视化组件（EntityNode, RelationshipEdge, GraphCanvas）
    - 数据迁移和备份工具
 
 **验收标准**：
-- 所有Mem0记忆功能正常工作
+- 所有Mem0记忆CRUD功能正常工作
+- 高级搜索和检索功能完整可用
+- 批量操作功能稳定可靠
+- 用户管理功能完整
 - 配置界面完整且易用
+- 图记忆可视化功能正常
 - 高级功能（自定义指令等）可正常使用
 
 #### 阶段3：MCP服务深度集成（2周）
@@ -773,11 +1349,11 @@ interface MonitoringDashboard {
 
 | 里程碑 | 时间节点 | 交付物 | 验收标准 |
 |--------|----------|--------|----------|
-| M1: Mem0架构完成 | 第2周 | Mem0专用API网关、前端重构 | Mem0服务发现和配置管理可用 |
-| M2: Mem0核心集成完成 | 第5周 | Mem0记忆系统完整集成 | 所有Mem0功能正常运行 |
-| M3: MCP深度集成完成 | 第7周 | MCP服务管理和调试工具 | MCP服务器管理和工具执行正常 |
-| M4: 高级功能完成 | 第10周 | 自定义指令、高级检索、监控 | 高级功能全部可用且实用 |
-| M5: Mem0生态界面交付 | 第11周 | 完整的Mem0管理系统 | 通过所有验收测试 |
+| M1: Mem0架构完成 | 第2周 | Mem0专用API网关、前端重构、完整API客户端 | Mem0服务发现和配置管理可用，API客户端支持所有CRUD操作 |
+| M2: Mem0核心集成完成 | 第5周 | Mem0记忆系统完整集成、批量操作、用户管理 | 所有Mem0功能正常运行，包括高级搜索、批量操作、图记忆可视化 |
+| M3: MCP深度集成完成 | 第7周 | MCP服务管理和调试工具、完整协议支持 | MCP服务器管理和工具执行正常，调试功能完善 |
+| M4: 高级功能完成 | 第10周 | 自定义指令、高级检索、监控、批量操作界面 | 高级功能全部可用且实用，批量操作稳定可靠 |
+| M5: Mem0生态界面交付 | 第11周 | 完整的Mem0管理系统、文档和帮助系统 | 通过所有验收测试，功能完整，用户体验优秀 |
 
 ### 5.3 风险控制
 
@@ -994,48 +1570,416 @@ const Mem0CoreManagement: React.FC = () => {
 };
 ```
 
-#### 6.2.2 Mem0监控面板界面
+#### 6.2.2 Mem0记忆管理界面
 
 ```typescript
-// Mem0监控面板主组件
-const Mem0MonitoringDashboard: React.FC = () => {
-  const [mem0Metrics, setMem0Metrics] = useState<Mem0SystemMetrics>();
-  const [mem0Alerts, setMem0Alerts] = useState<Mem0Alert[]>([]);
-  
-  useEffect(() => {
-    // 实时Mem0数据更新
-    const interval = setInterval(() => {
-      fetchMem0Metrics();
-      fetchMem0Alerts();
-    }, 5000);
-    
-    return () => clearInterval(interval);
-  }, []);
-  
+// Mem0记忆管理主组件
+const Mem0MemoryManagement: React.FC = () => {
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [searchOptions, setSearchOptions] = useState<SearchOptions>({});
+  const [selectedMemories, setSelectedMemories] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // 获取记忆列表
+  const fetchMemories = async (options: MemoryOptions = {}) => {
+    setLoading(true);
+    try {
+      const result = await mem0Api.getAll(options);
+      setMemories(result);
+    } catch (error) {
+      console.error('Failed to fetch memories:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 搜索记忆
+  const searchMemories = async (query: string, options: SearchOptions = {}) => {
+    setLoading(true);
+    try {
+      const result = await mem0Api.search(query, {
+        ...options,
+        keyword_search: true,
+        rerank: true,
+        filter_memories: true
+      });
+      setMemories(result);
+    } catch (error) {
+      console.error('Failed to search memories:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 批量删除记忆
+  const handleBatchDelete = async () => {
+    if (selectedMemories.length === 0) return;
+
+    try {
+      await mem0Api.batchDelete(selectedMemories);
+      await fetchMemories(searchOptions);
+      setSelectedMemories([]);
+    } catch (error) {
+      console.error('Failed to batch delete memories:', error);
+    }
+  };
+
   return (
-    <div className="mem0-monitoring-dashboard">
-      <Mem0MetricsOverview metrics={mem0Metrics} />
-      <Mem0AlertsPanel alerts={mem0Alerts} />
-      <Mem0ServiceHealthGrid />
-      <Mem0PerformanceCharts />
+    <div className="mem0-memory-management">
+      <div className="memory-toolbar">
+        <MemorySearchBox
+          onSearch={searchMemories}
+          options={searchOptions}
+          onOptionsChange={setSearchOptions}
+        />
+        <div className="batch-actions">
+          <Button
+            onClick={handleBatchDelete}
+            disabled={selectedMemories.length === 0}
+            variant="destructive"
+          >
+            批量删除 ({selectedMemories.length})
+          </Button>
+        </div>
+      </div>
+
+      <MemoryList
+        memories={memories}
+        loading={loading}
+        selectedIds={selectedMemories}
+        onSelectionChange={setSelectedMemories}
+        onMemoryUpdate={fetchMemories}
+      />
     </div>
   );
 };
 
-// Mem0服务健康状态网格
-const Mem0ServiceHealthGrid: React.FC = () => {
-  const { mem0HealthStatus } = useSelector((state: RootState) => state.mem0Services);
-  
+// 记忆搜索组件
+const MemorySearchBox: React.FC<{
+  onSearch: (query: string, options: SearchOptions) => void;
+  options: SearchOptions;
+  onOptionsChange: (options: SearchOptions) => void;
+}> = ({ onSearch, options, onOptionsChange }) => {
+  const [query, setQuery] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const handleSearch = () => {
+    onSearch(query, options);
+  };
+
   return (
-    <div className="mem0-health-grid">
-      {Object.entries(mem0HealthStatus).map(([serviceId, health]) => (
-        <Mem0ServiceHealthCard
-          key={serviceId}
-          serviceId={serviceId}
-          health={health}
-          onClick={() => navigateToMem0ServiceDetail(serviceId)}
+    <div className="memory-search-box">
+      <div className="search-input">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索记忆..."
+          onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
         />
-      ))}
+        <Button onClick={handleSearch}>搜索</Button>
+      </div>
+
+      <div className="search-options">
+        <Button
+          variant="ghost"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+        >
+          高级选项
+        </Button>
+      </div>
+
+      {showAdvanced && (
+        <div className="advanced-options">
+          <div className="option-group">
+            <label>
+              <input
+                type="checkbox"
+                checked={options.keyword_search ?? false}
+                onChange={(e) => onOptionsChange({
+                  ...options,
+                  keyword_search: e.target.checked
+                })}
+              />
+              关键词搜索 (BM25)
+            </label>
+          </div>
+
+          <div className="option-group">
+            <label>
+              <input
+                type="checkbox"
+                checked={options.rerank ?? false}
+                onChange={(e) => onOptionsChange({
+                  ...options,
+                  rerank: e.target.checked
+                })}
+              />
+              LLM重排序
+            </label>
+          </div>
+
+          <div className="option-group">
+            <label>
+              <input
+                type="checkbox"
+                checked={options.filter_memories ?? false}
+                onChange={(e) => onOptionsChange({
+                  ...options,
+                  filter_memories: e.target.checked
+                })}
+              />
+              智能过滤
+            </label>
+          </div>
+
+          <div className="option-group">
+            <label>阈值:</label>
+            <Input
+              type="number"
+              min="0"
+              max="1"
+              step="0.1"
+              value={options.threshold ?? ''}
+              onChange={(e) => onOptionsChange({
+                ...options,
+                threshold: parseFloat(e.target.value) || undefined
+              })}
+            />
+          </div>
+
+          <div className="option-group">
+            <label>限制结果数:</label>
+            <Input
+              type="number"
+              min="1"
+              max="1000"
+              value={options.limit ?? 100}
+              onChange={(e) => onOptionsChange({
+                ...options,
+                limit: parseInt(e.target.value) || 100
+              })}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+#### 6.2.3 批量操作界面
+
+```typescript
+// 批量操作主组件
+const BatchOperations: React.FC = () => {
+  const [operationType, setOperationType] = useState<'update' | 'delete' | 'import' | 'export'>('update');
+  const [selectedMemories, setSelectedMemories] = useState<string[]>([]);
+  const [batchProgress, setBatchProgress] = useState<{
+    total: number;
+    completed: number;
+    errors: string[];
+  }>({ total: 0, completed: 0, errors: [] });
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // 批量更新处理
+  const handleBatchUpdate = async (updates: MemoryUpdateBody[]) => {
+    setIsProcessing(true);
+    setBatchProgress({ total: updates.length, completed: 0, errors: [] });
+
+    try {
+      // 分批处理，每批100个
+      const batchSize = 100;
+      for (let i = 0; i < updates.length; i += batchSize) {
+        const batch = updates.slice(i, i + batchSize);
+        await mem0Api.batchUpdate(batch);
+        setBatchProgress(prev => ({
+          ...prev,
+          completed: prev.completed + batch.length
+        }));
+      }
+    } catch (error) {
+      setBatchProgress(prev => ({
+        ...prev,
+        errors: [...prev.errors, error.message]
+      }));
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 批量删除处理
+  const handleBatchDelete = async (memoryIds: string[]) => {
+    setIsProcessing(true);
+    setBatchProgress({ total: memoryIds.length, completed: 0, errors: [] });
+
+    try {
+      const batchSize = 100;
+      for (let i = 0; i < memoryIds.length; i += batchSize) {
+        const batch = memoryIds.slice(i, i + batchSize);
+        await mem0Api.batchDelete(batch);
+        setBatchProgress(prev => ({
+          ...prev,
+          completed: prev.completed + batch.length
+        }));
+      }
+    } catch (error) {
+      setBatchProgress(prev => ({
+        ...prev,
+        errors: [...prev.errors, error.message]
+      }));
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="batch-operations">
+      <div className="operation-selector">
+        <h2>批量操作</h2>
+        <div className="operation-tabs">
+          {['update', 'delete', 'import', 'export'].map(type => (
+            <button
+              key={type}
+              className={`tab ${operationType === type ? 'active' : ''}`}
+              onClick={() => setOperationType(type as any)}
+            >
+              {type === 'update' && '批量更新'}
+              {type === 'delete' && '批量删除'}
+              {type === 'import' && '批量导入'}
+              {type === 'export' && '批量导出'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="operation-content">
+        {operationType === 'update' && (
+          <BatchUpdateForm
+            onSubmit={handleBatchUpdate}
+            disabled={isProcessing}
+          />
+        )}
+
+        {operationType === 'delete' && (
+          <BatchDeleteForm
+            selectedMemories={selectedMemories}
+            onSubmit={handleBatchDelete}
+            disabled={isProcessing}
+          />
+        )}
+
+        {operationType === 'import' && (
+          <BatchImportForm disabled={isProcessing} />
+        )}
+
+        {operationType === 'export' && (
+          <BatchExportForm disabled={isProcessing} />
+        )}
+      </div>
+
+      {isProcessing && (
+        <div className="batch-progress">
+          <h3>处理进度</h3>
+          <div className="progress-bar">
+            <div
+              className="progress-fill"
+              style={{
+                width: `${(batchProgress.completed / batchProgress.total) * 100}%`
+              }}
+            />
+          </div>
+          <div className="progress-text">
+            {batchProgress.completed} / {batchProgress.total} 已完成
+          </div>
+
+          {batchProgress.errors.length > 0 && (
+            <div className="progress-errors">
+              <h4>错误信息:</h4>
+              <ul>
+                {batchProgress.errors.map((error, index) => (
+                  <li key={index}>{error}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// 批量更新表单
+const BatchUpdateForm: React.FC<{
+  onSubmit: (updates: MemoryUpdateBody[]) => void;
+  disabled: boolean;
+}> = ({ onSubmit, disabled }) => {
+  const [csvData, setCsvData] = useState('');
+  const [updates, setUpdates] = useState<MemoryUpdateBody[]>([]);
+
+  const parseCsvData = () => {
+    try {
+      const lines = csvData.trim().split('\n');
+      const parsed = lines.map(line => {
+        const [memoryId, text] = line.split(',');
+        return { memoryId: memoryId.trim(), text: text.trim() };
+      });
+      setUpdates(parsed);
+    } catch (error) {
+      console.error('Failed to parse CSV data:', error);
+    }
+  };
+
+  return (
+    <div className="batch-update-form">
+      <h3>批量更新记忆</h3>
+      <div className="form-group">
+        <label>CSV数据 (格式: memory_id,new_text)</label>
+        <textarea
+          value={csvData}
+          onChange={(e) => setCsvData(e.target.value)}
+          placeholder="memory_id_1,新的记忆内容1&#10;memory_id_2,新的记忆内容2"
+          rows={10}
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="form-actions">
+        <Button onClick={parseCsvData} disabled={disabled}>
+          解析数据
+        </Button>
+        <Button
+          onClick={() => onSubmit(updates)}
+          disabled={disabled || updates.length === 0}
+          variant="primary"
+        >
+          开始批量更新 ({updates.length} 项)
+        </Button>
+      </div>
+
+      {updates.length > 0 && (
+        <div className="preview">
+          <h4>预览 (前5项):</h4>
+          <table>
+            <thead>
+              <tr>
+                <th>记忆ID</th>
+                <th>新内容</th>
+              </tr>
+            </thead>
+            <tbody>
+              {updates.slice(0, 5).map((update, index) => (
+                <tr key={index}>
+                  <td>{update.memoryId}</td>
+                  <td>{update.text}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {updates.length > 5 && (
+            <p>... 还有 {updates.length - 5} 项</p>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -1687,23 +2631,30 @@ aws s3 cp backup/ s3://mem0-backups/$(date +%Y%m%d)/ --recursive
 本技术方案成功实现了为Mem0生态系统构建专用统一管理界面的核心目标：
 
 1. **专用架构**：从OpenMemory-UI转换为专为Mem0生态设计的管理界面
-2. **功能完整**：涵盖Mem0核心服务、MCP服务集成、高级检索、自定义指令等完整功能
-3. **Mem0生态专用**：摒弃OpenMemory依赖，专注于Mem0核心服务和MCP服务管理
-4. **高度可扩展**：建立了标准化的Mem0服务集成机制，便于Mem0生态的未来扩展
+2. **功能完整**：涵盖Mem0核心服务、MCP服务集成、高级检索、自定义指令、批量操作等完整功能
+3. **API一致性**：完全对齐Mem0实际API接口，支持所有CRUD操作和高级功能
+4. **Mem0生态专用**：摒弃OpenMemory依赖，专注于Mem0核心服务和MCP服务管理
+5. **高度可扩展**：建立了标准化的Mem0服务集成机制，便于Mem0生态的未来扩展
+6. **用户体验优化**：提供完整的批量操作、图记忆可视化、高级搜索等用户友好功能
 
 ### 9.2 技术亮点
 
-1. **统一API网关**：提供标准化的服务接入和管理机制
-2. **智能配置管理**：支持配置同步、验证和回滚的完整生命周期
-3. **实时监控系统**：全面的性能监控和告警机制
-4. **模块化设计**：高度可复用的组件架构，便于维护和扩展
+1. **完整API集成**：完全对齐Mem0实际API，支持所有CRUD操作、批量操作、用户管理等功能
+2. **统一API网关**：提供标准化的服务接入和管理机制，支持v1/v2版本动态切换
+3. **高级搜索功能**：集成关键词搜索、LLM重排序、智能过滤等高级检索能力
+4. **批量操作支持**：提供完整的批量更新、删除、导入、导出功能，支持大规模数据处理
+5. **图记忆可视化**：实现实体关系的可视化展示和交互操作
+6. **智能配置管理**：支持配置同步、验证和回滚的完整生命周期
+7. **实时监控系统**：全面的性能监控和告警机制
+8. **模块化设计**：高度可复用的组件架构，便于维护和扩展
 
 ### 9.3 预期收益
 
-1. **开发效率提升**：统一的管理界面减少多工具切换成本
-2. **运维简化**：集中化的配置管理和监控降低运维复杂度
-3. **功能增强**：高级功能提升用户体验和系统能力
-4. **生态完整性**：形成完整的Mem0生态管理解决方案
+1. **开发效率提升**：统一的管理界面减少多工具切换成本，完整的API支持减少开发工作量
+2. **运维简化**：集中化的配置管理和监控降低运维复杂度，批量操作提升管理效率
+3. **功能增强**：高级搜索、图记忆可视化、批量操作等功能显著提升用户体验和系统能力
+4. **数据管理优化**：完整的CRUD操作、用户管理、记忆历史追踪提供全面的数据管理能力
+5. **生态完整性**：形成完整的Mem0生态管理解决方案，支持未来功能扩展
 
 ### 9.4 后续发展
 

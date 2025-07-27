@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import warnings
 from typing import Dict, List, Optional
@@ -76,12 +77,29 @@ class OpenAILLM(LLMBase):
 
             if response.choices[0].message.tool_calls:
                 for tool_call in response.choices[0].message.tool_calls:
-                    processed_response["tool_calls"].append(
-                        {
-                            "name": tool_call.function.name,
-                            "arguments": json.loads(extract_json(tool_call.function.arguments)),
-                        }
-                    )
+                    try:
+                        arguments_str = extract_json(tool_call.function.arguments)
+                        parsed_arguments = json.loads(arguments_str)
+                        processed_response["tool_calls"].append(
+                            {
+                                "name": tool_call.function.name,
+                                "arguments": parsed_arguments,
+                            }
+                        )
+                    except json.JSONDecodeError as e:
+                        logging.warning(f"JSON解析失败，跳过此工具调用: {e}")
+                        logging.warning(f"原始参数: {tool_call.function.arguments}")
+                        # 尝试使用原始字符串作为fallback
+                        try:
+                            processed_response["tool_calls"].append(
+                                {
+                                    "name": tool_call.function.name,
+                                    "arguments": {"raw_content": tool_call.function.arguments},
+                                }
+                            )
+                        except Exception:
+                            # 如果仍然失败，跳过这个工具调用
+                            continue
 
             return processed_response
         else:

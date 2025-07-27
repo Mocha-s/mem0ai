@@ -147,18 +147,23 @@ class MemoryGraph:
                 - 'contexts': The base data store response for each memory.
                 - 'entities': A list of strings representing the nodes and relationships
         """
-        agent_filter = ""
         params = {"user_id": filters["user_id"], "limit": limit}
+        
+        # Build the MATCH clause with agent_id filters if provided
         if filters.get("agent_id"):
-            agent_filter = "AND n.agent_id = $agent_id AND m.agent_id = $agent_id"
             params["agent_id"] = filters["agent_id"]
-
-        query = f"""
-        MATCH (n {self.node_label} {{user_id: $user_id}})-[r]->(m {self.node_label} {{user_id: $user_id}})
-        WHERE 1=1 {agent_filter}
-        RETURN n.name AS source, type(r) AS relationship, m.name AS target
-        LIMIT $limit
-        """
+            query = f"""
+            MATCH (n {self.node_label} {{user_id: $user_id, agent_id: $agent_id}})-[r]->(m {self.node_label} {{user_id: $user_id, agent_id: $agent_id}})
+            RETURN n.name AS source, type(r) AS relationship, m.name AS target
+            LIMIT $limit
+            """
+        else:
+            query = f"""
+            MATCH (n {self.node_label} {{user_id: $user_id}})-[r]->(m {self.node_label} {{user_id: $user_id}})
+            RETURN n.name AS source, type(r) AS relationship, m.name AS target
+            LIMIT $limit
+            """
+        
         results = self.graph.query(query, params=params)
 
         final_results = []
@@ -251,26 +256,32 @@ class MemoryGraph:
     def _search_graph_db(self, node_list, filters, limit=100):
         """Search similar nodes among and their respective incoming and outgoing relations."""
         result_relations = []
-        agent_filter = ""
-        if filters.get("agent_id"):
-            agent_filter = "AND n.agent_id = $agent_id AND m.agent_id = $agent_id"
-
+        
         for node in node_list:
             n_embedding = self.embedding_model.embed(node)
+            
+            # Build agent filter for the main node search
+            agent_filter_n = ""
+            if filters.get("agent_id"):
+                agent_filter_n = "AND n.agent_id = $agent_id"
+            
+            # Build agent filter for related nodes in CALL block
+            agent_filter_m = ""
+            if filters.get("agent_id"):
+                agent_filter_m = "AND m.agent_id = $agent_id"
 
             cypher_query = f"""
             MATCH (n {self.node_label})
-            WHERE n.embedding IS NOT NULL AND n.user_id = $user_id
-            {agent_filter}
+            WHERE n.embedding IS NOT NULL AND n.user_id = $user_id {agent_filter_n}
             WITH n, round(2 * vector.similarity.cosine(n.embedding, $n_embedding) - 1, 4) AS similarity // denormalize for backward compatibility
             WHERE similarity >= $threshold
             CALL {{
                 MATCH (n)-[r]->(m)
-                WHERE m.user_id = $user_id {agent_filter.replace("n.", "m.")} 
+                WHERE m.user_id = $user_id {agent_filter_m}
                 RETURN n.name AS source, elementId(n) AS source_id, type(r) AS relationship, elementId(r) AS relation_id, m.name AS destination, elementId(m) AS destination_id
                 UNION
                 MATCH (m)-[r]->(n)
-                WHERE m.user_id = $user_id {agent_filter.replace("n.", "m.")}
+                WHERE m.user_id = $user_id {agent_filter_m}
                 RETURN m.name AS source, elementId(m) AS source_id, type(r) AS relationship, elementId(r) AS relation_id, n.name AS destination, elementId(n) AS destination_id
             }}
             WITH distinct source, source_id, relationship, relation_id, destination, destination_id, similarity

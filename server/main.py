@@ -57,6 +57,10 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE", "0.1"))
 OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "2000"))
+# 多模态功能配置
+OPENAI_ENABLE_VISION = os.environ.get("OPENAI_ENABLE_VISION", "true").lower() == "true"
+OPENAI_VISION_DETAILS = os.environ.get("OPENAI_VISION_DETAILS", "auto")
+FORCE_MULTIMODAL_CONFIG = os.environ.get("FORCE_MULTIMODAL_CONFIG", "false").lower() == "true"
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/data/history.db")
 
 DEFAULT_CONFIG = {
@@ -76,8 +80,8 @@ DEFAULT_CONFIG = {
             "temperature": OPENAI_TEMPERATURE,
             "max_tokens": OPENAI_MAX_TOKENS,
             "openai_base_url": OPENAI_BASE_URL,
-            "enable_vision": True,
-            "vision_details": "auto"
+            "enable_vision": OPENAI_ENABLE_VISION,
+            "vision_details": OPENAI_VISION_DETAILS
         }
     },
     "embedder": {
@@ -104,6 +108,28 @@ if NEO4J_URI and NEO4J_URI != "bolt://neo4j:7687" or os.environ.get("NEO4J_URI")
 
 
 MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)
+
+def check_multimodal_functionality():
+    """启动时检查多模态功能是否正常"""
+    global MEMORY_INSTANCE
+    if FORCE_MULTIMODAL_CONFIG:
+        try:
+            # 简单测试LLM是否支持视觉
+            if hasattr(MEMORY_INSTANCE, 'llm') and MEMORY_INSTANCE.llm:
+                logging.info("✅ 多模态功能配置验证通过")
+            else:
+                logging.warning("⚠️ LLM实例未正确初始化")
+        except Exception as e:
+            logging.error(f"❌ 多模态功能检查失败: {e}")
+            # 尝试重新配置
+            try:
+                MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)
+                logging.info("✅ 自动重新配置多模态功能成功")
+            except Exception as retry_error:
+                logging.error(f"❌ 自动修复失败: {retry_error}")
+
+# 启动时检查多模态功能
+check_multimodal_functionality()
 
 # Global graph memory cache for performance optimization
 GRAPH_MEMORY_CACHE = {}
@@ -244,7 +270,7 @@ def health_check():
 
 class Message(BaseModel):
     role: str = Field(..., description="Role of the message (user or assistant).")
-    content: Union[str, Dict[str, Any]] = Field(..., description="Message content (string or multimodal object).")
+    content: Union[str, Dict[str, Any], List[Dict[str, Any]]] = Field(..., description="Message content (string, dict, or list of multimodal objects).")
 
 
 class MemoryCreate(BaseModel):

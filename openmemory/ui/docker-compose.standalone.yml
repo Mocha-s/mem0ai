@@ -1,0 +1,55 @@
+services:
+  openmemory-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: openmemory-ui-standalone
+    ports:
+      - "3000:3000"
+    environment:
+      # Application Configuration
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1
+      
+      # API Configuration (can be overridden)
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NEXT_PUBLIC_USER_ID=${NEXT_PUBLIC_USER_ID:-standalone-user}
+      
+      # Mock Configuration (enabled for standalone)
+      - NEXT_PUBLIC_ENABLE_MOCKING=true
+      - NEXT_PUBLIC_MOCK_OPENMEMORY=true
+      - NEXT_PUBLIC_MOCK_MEM0=true
+      
+      # Standalone Mode
+      - NEXT_PUBLIC_STANDALONE_MODE=true
+      
+      # Optional: Demo and Debug Settings
+      - NEXT_PUBLIC_DEMO_MODE=${NEXT_PUBLIC_DEMO_MODE:-true}
+      - NEXT_PUBLIC_SHOW_DEBUG_INFO=${NEXT_PUBLIC_SHOW_DEBUG_INFO:-false}
+      
+    volumes:
+      # Optional: Mount custom configuration
+      - ./config:/app/config:ro
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.openmemory-ui.rule=Host(`localhost`)"
+      - "traefik.http.services.openmemory-ui.loadbalancer.server.port=3000"
+    
+    networks:
+      - openmemory-network
+
+networks:
+  openmemory-network:
+    driver: bridge
+    name: openmemory-network
