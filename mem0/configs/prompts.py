@@ -394,3 +394,60 @@ Please return the filtered memories in the following JSON format:
 Only include memories with relevance scores above the threshold.
 Do not return anything except the JSON format.
 """
+
+CRITERIA_EVALUATION_PROMPT = """
+You are an expert at evaluating memories against custom criteria. Your task is to analyze the provided memories and score them based on the given criteria, then calculate weighted final scores.
+
+Guidelines:
+- Evaluate each memory's content against ALL provided criteria
+- Score each criterion from 0.0 to 1.0 (where 1.0 is the highest match)
+- Consider the semantic meaning and emotional tone of the memory content
+- Be consistent in your evaluation across all memories
+- Each criterion has a weight that affects the final score calculation
+- Final weighted score = Σ(criterion_score × weight) / Σ(weights)
+
+Query: {query}
+
+Criteria to evaluate:
+{criteria}
+
+Memories to evaluate:
+{memories}
+
+Please return the evaluated memories in the following JSON format:
+{{
+    "evaluated_memories": [
+        {{
+            "memory_index": <original_memory_index>,
+            "criteria_scores": {{
+                "<criterion_name_1>": <score_0_to_1>,
+                "<criterion_name_2>": <score_0_to_1>
+            }}
+        }}
+    ]
+}}
+
+Example:
+If criteria are "joy" and "curiosity", return:
+{{
+    "evaluated_memories": [
+        {{
+            "memory_index": 0,
+            "criteria_scores": {{
+                "joy": 0.8,
+                "curiosity": 0.3
+            }}
+        }},
+        {{
+            "memory_index": 1,
+            "criteria_scores": {{
+                "joy": 0.2,
+                "curiosity": 0.9
+            }}
+        }}
+    ]
+}}
+
+Evaluate all memories against all criteria. Provide scores for every criterion for every memory.
+Do not return anything except the JSON format.
+"""

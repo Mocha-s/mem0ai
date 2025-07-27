@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Set
 from .bm25_engine import BM25SearchEngine
 from .reranker import LLMReranker
 from .filter import MemoryFilter
+from .criteria_evaluator import CriteriaEvaluator
 from .performance import PerformanceMonitor
 
 logger = logging.getLogger(__name__)
@@ -27,9 +28,11 @@ class AdvancedRetrieval:
         if llm_config:
             self.reranker = LLMReranker(llm_config)
             self.filter = MemoryFilter(llm_config)
+            self.criteria_evaluator = CriteriaEvaluator(llm_config)
         else:
             self.reranker = None
             self.filter = None
+            self.criteria_evaluator = None
             logger.warning("No LLM config provided, LLM-based features will be disabled")
     
     def _get_memory_id(self, memory: Dict[str, Any]) -> str:
@@ -173,28 +176,68 @@ class AdvancedRetrieval:
         except Exception as e:
             logger.error(f"Error in filtering: {str(e)}")
             return results
-    
+
+    async def _run_criteria_scoring(self, query: str, results: List[Dict[str, Any]], criteria: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Run criteria scoring asynchronously.
+
+        Args:
+            query (str): Search query
+            results (List[Dict[str, Any]]): Results to score
+            criteria (List[Dict[str, Any]]): Criteria for scoring
+
+        Returns:
+            List[Dict[str, Any]]: Scored and reranked results
+        """
+        if not self.criteria_evaluator or not self.criteria_evaluator.is_available():
+            logger.warning("Criteria evaluator not available, skipping criteria scoring")
+            return results
+
+        if not criteria:
+            logger.warning("No criteria provided for scoring")
+            return results
+
+        try:
+            # Run criteria evaluation in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            scored_results = await loop.run_in_executor(
+                None,
+                self.criteria_evaluator.evaluate_criteria,
+                query,
+                results,
+                criteria
+            )
+            logger.debug(f"Criteria scoring processed {len(results)} -> {len(scored_results)} results")
+            return scored_results
+        except Exception as e:
+            logger.error(f"Error in criteria scoring: {str(e)}")
+            return results
+
     @PerformanceMonitor.monitor_async_latency("AdvancedRetrieval", 500)
     async def search(
-        self, 
-        query: str, 
-        semantic_results: List[Dict[str, Any]], 
-        keyword_search: bool = False, 
-        rerank: bool = False, 
-        filter_memories: bool = False, 
+        self,
+        query: str,
+        semantic_results: List[Dict[str, Any]],
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False,
+        criteria_scoring: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
-        Perform advanced retrieval with optional BM25 search, reranking, and filtering.
-        
+        Perform advanced retrieval with optional BM25 search, reranking, filtering, and criteria scoring.
+
         Args:
             query (str): Search query
             semantic_results (List[Dict[str, Any]]): Base semantic search results
             keyword_search (bool): Enable BM25 keyword search
             rerank (bool): Enable LLM-based reranking
             filter_memories (bool): Enable intelligent memory filtering
+            criteria_scoring (bool): Enable LLM-based criteria scoring
+            retrieval_criteria (Optional[List[Dict[str, Any]]]): List of criteria for scoring
             **kwargs: Additional parameters (threshold, limit, etc.)
-            
+
         Returns:
             List[Dict[str, Any]]: Enhanced search results
         """
@@ -223,7 +266,12 @@ class AdvancedRetrieval:
                 threshold = kwargs.get('threshold', 0.7)
                 logger.debug(f"Running intelligent filtering with threshold {threshold}...")
                 results = await self._run_filtering(query, results, threshold)
-            
+
+            # Phase 4: Criteria Scoring
+            if criteria_scoring and retrieval_criteria:
+                logger.debug(f"Running criteria scoring with {len(retrieval_criteria)} criteria...")
+                results = await self._run_criteria_scoring(query, results, retrieval_criteria)
+
             # Apply final limit if specified
             limit = kwargs.get('limit')
             if limit and len(results) > limit:
@@ -251,5 +299,6 @@ class AdvancedRetrieval:
         return {
             'bm25_search': True,  # BM25 is always available
             'reranking': self.reranker.is_available() if self.reranker else False,
-            'filtering': self.filter.is_available() if self.filter else False
+            'filtering': self.filter.is_available() if self.filter else False,
+            'criteria_scoring': self.criteria_evaluator.is_available() if self.criteria_evaluator else False
         }

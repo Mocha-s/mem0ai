@@ -10,7 +10,7 @@ import uuid
 import warnings
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pytz
 from pydantic import ValidationError
@@ -703,6 +703,7 @@ class Memory(MemoryBase):
         keyword_search: bool = False,
         rerank: bool = False,
         filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
     ):
         """
         Searches for memories based on a query
@@ -747,7 +748,7 @@ class Memory(MemoryBase):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_memories = executor.submit(
                 self._search_vector_store, query, effective_filters, limit, threshold,
-                keyword_search, rerank, filter_memories
+                keyword_search, rerank, filter_memories, retrieval_criteria
             )
             future_graph_entities = (
                 executor.submit(self.graph.search, query, effective_filters, limit) if self.enable_graph else None
@@ -783,7 +784,8 @@ class Memory(MemoryBase):
         threshold: Optional[float] = None,
         keyword_search: bool = False,
         rerank: bool = False,
-        filter_memories: bool = False
+        filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None
     ):
         embeddings = self.embedding_model.embed(query, "search")
         memories = self.vector_store.search(query=query, vectors=embeddings, limit=limit, filters=filters)
@@ -820,8 +822,11 @@ class Memory(MemoryBase):
             if threshold is None or mem.score >= threshold:
                 original_memories.append(memory_item_dict)
 
+        # Check if criteria scoring should be enabled
+        criteria_scoring = bool(retrieval_criteria)
+
         # Apply advanced retrieval if any advanced features are enabled
-        if (keyword_search or rerank or filter_memories) and AdvancedRetrieval is not None:
+        if (keyword_search or rerank or filter_memories or criteria_scoring) and AdvancedRetrieval is not None:
             try:
                 # Get LLM config if available
                 llm_config = {}
@@ -837,6 +842,7 @@ class Memory(MemoryBase):
                     # Create a new event loop for async operations
                     enhanced_memories = asyncio.run(advanced_retrieval.search(
                         query, original_memories, keyword_search, rerank, filter_memories,
+                        criteria_scoring, retrieval_criteria,
                         threshold=threshold, limit=limit
                     ))
                     return enhanced_memories
@@ -1829,6 +1835,7 @@ class AsyncMemory(MemoryBase):
         keyword_search: bool = False,
         rerank: bool = False,
         filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
     ):
         """
         Searches for memories based on a query
@@ -1872,7 +1879,7 @@ class AsyncMemory(MemoryBase):
         )
 
         vector_store_task = asyncio.create_task(
-            self._search_vector_store(query, effective_filters, limit, threshold, keyword_search, rerank, filter_memories)
+            self._search_vector_store(query, effective_filters, limit, threshold, keyword_search, rerank, filter_memories, retrieval_criteria)
         )
 
         graph_task = None
@@ -1911,7 +1918,8 @@ class AsyncMemory(MemoryBase):
         threshold: Optional[float] = None,
         keyword_search: bool = False,
         rerank: bool = False,
-        filter_memories: bool = False
+        filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None
     ):
         embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
         memories = await asyncio.to_thread(
@@ -1950,8 +1958,11 @@ class AsyncMemory(MemoryBase):
             if threshold is None or mem.score >= threshold:
                 original_memories.append(memory_item_dict)
 
+        # Check if criteria scoring should be enabled
+        criteria_scoring = bool(retrieval_criteria)
+
         # Apply advanced retrieval if any advanced features are enabled
-        if (keyword_search or rerank or filter_memories) and AdvancedRetrieval is not None:
+        if (keyword_search or rerank or filter_memories or criteria_scoring) and AdvancedRetrieval is not None:
             try:
                 # Get LLM config if available
                 llm_config = {}
@@ -1964,6 +1975,7 @@ class AsyncMemory(MemoryBase):
                 # Run advanced retrieval asynchronously
                 enhanced_memories = await advanced_retrieval.search(
                     query, original_memories, keyword_search, rerank, filter_memories,
+                    criteria_scoring, retrieval_criteria,
                     threshold=threshold, limit=limit
                 )
                 return enhanced_memories
