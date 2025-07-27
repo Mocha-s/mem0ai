@@ -4,8 +4,35 @@ import re
 from mem0.configs.prompts import FACT_RETRIEVAL_PROMPT
 
 
-def get_fact_retrieval_messages(message):
-    return FACT_RETRIEVAL_PROMPT, f"Input:\n{message}"
+def get_fact_retrieval_messages(message, includes=None, excludes=None):
+    """
+    Generate fact retrieval messages with optional selective memory filtering.
+
+    Args:
+        message (str): The input message to process
+        includes (str, optional): Include only specific types of memories
+        excludes (str, optional): Exclude specific types of memories
+
+    Returns:
+        tuple: (system_prompt, user_prompt) for LLM fact extraction
+    """
+    base_prompt = FACT_RETRIEVAL_PROMPT
+
+    # Add selective memory instructions if provided
+    selective_instructions = []
+
+    # Excludes have higher priority than includes
+    if excludes:
+        selective_instructions.append(f"IMPORTANT: Do NOT extract or store any information related to: {excludes}")
+
+    if includes:
+        selective_instructions.append(f"FOCUS: Only extract and store information specifically related to: {includes}")
+
+    # Append selective instructions to the base prompt if any exist
+    if selective_instructions:
+        base_prompt += "\n\n" + "\n".join(selective_instructions)
+
+    return base_prompt, f"Input:\n{message}"
 
 
 def parse_messages(messages):

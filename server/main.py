@@ -166,6 +166,8 @@ class MemoryCreate(BaseModel):
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     version: Optional[str] = Field("v1", description="API version for memory creation. v1 (default) or v2 (contextual add).")
+    includes: Optional[str] = Field(None, description="Include only specific types of memories")
+    excludes: Optional[str] = Field(None, description="Exclude specific types of memories")
 
 
 class SearchRequest(BaseModel):

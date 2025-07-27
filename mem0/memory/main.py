@@ -215,6 +215,8 @@ class Memory(MemoryBase):
         memory_type: Optional[str] = None,
         prompt: Optional[str] = None,
         version: Optional[str] = "v1",
+        includes: Optional[str] = None,
+        excludes: Optional[str] = None,
     ):
         """
         Create a new memory.
@@ -239,7 +241,10 @@ class Memory(MemoryBase):
             prompt (str, optional): Prompt to use for the memory creation. Defaults to None.
             version (str, optional): API version for memory creation. "v1" (default) for standard
                 behavior, "v2" for contextual add with automatic history retrieval. Defaults to "v1".
-
+            includes (str, optional): Include only specific types of memories. When provided, only
+                information related to this topic will be extracted and stored. Defaults to None.
+            excludes (str, optional): Exclude specific types of memories. When provided, information
+                related to this topic will be ignored during extraction. Defaults to None.
 
         Returns:
             dict: A dictionary containing the result of the memory addition operation, typically
@@ -334,7 +339,7 @@ class Memory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer)
+            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer, includes, excludes)
             future2 = executor.submit(self._add_to_graph, messages, effective_filters)
 
             concurrent.futures.wait([future1, future2])
@@ -360,7 +365,7 @@ class Memory(MemoryBase):
 
         return {"results": vector_store_result}
 
-    def _add_to_vector_store(self, messages, metadata, filters, infer):
+    def _add_to_vector_store(self, messages, metadata, filters, infer, includes=None, excludes=None):
         if not infer:
             returned_memories = []
             for message_dict in messages:
@@ -403,7 +408,7 @@ class Memory(MemoryBase):
             system_prompt = self.config.custom_fact_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages)
+            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages, includes, excludes)
 
         response = self.llm.generate_response(
             messages=[
@@ -1347,6 +1352,8 @@ class AsyncMemory(MemoryBase):
         prompt: Optional[str] = None,
         llm=None,
         version: Optional[str] = "v1",
+        includes: Optional[str] = None,
+        excludes: Optional[str] = None,
     ):
         """
         Create a new memory asynchronously.
@@ -1364,6 +1371,10 @@ class AsyncMemory(MemoryBase):
             llm (BaseChatModel, optional): LLM class to use for generating procedural memories. Defaults to None. Useful when user is using LangChain ChatModel.
             version (str, optional): API version for memory creation. "v1" (default) for standard
                 behavior, "v2" for contextual add with automatic history retrieval. Defaults to "v1".
+            includes (str, optional): Include only specific types of memories. When provided, only
+                information related to this topic will be extracted and stored. Defaults to None.
+            excludes (str, optional): Exclude specific types of memories. When provided, information
+                related to this topic will be ignored during extraction. Defaults to None.
         Returns:
             dict: A dictionary containing the result of the memory addition operation.
         """
@@ -1452,7 +1463,7 @@ class AsyncMemory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         vector_store_task = asyncio.create_task(
-            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer)
+            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, includes, excludes)
         )
         graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters))
 
@@ -1482,6 +1493,8 @@ class AsyncMemory(MemoryBase):
         metadata: dict,
         effective_filters: dict,
         infer: bool,
+        includes: Optional[str] = None,
+        excludes: Optional[str] = None,
     ):
         if not infer:
             returned_memories = []
@@ -1524,7 +1537,7 @@ class AsyncMemory(MemoryBase):
             system_prompt = self.config.custom_fact_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages)
+            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages, includes, excludes)
 
         response = await asyncio.to_thread(
             self.llm.generate_response,

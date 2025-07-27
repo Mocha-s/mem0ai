@@ -547,6 +547,30 @@
               }
             ],
             "title": "Metadata"
+          },
+          "includes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Includes",
+            "description": "Include only specific types of memories"
+          },
+          "excludes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excludes",
+            "description": "Exclude specific types of memories"
           }
         },
         "type": "object",
