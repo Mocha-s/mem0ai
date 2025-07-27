@@ -6,6 +6,7 @@ os.environ['PYTHONPATH'] = "/app/packages:" + os.environ.get('PYTHONPATH', '')
 
 import json
 import logging
+import threading
 import time
 import uuid
 import warnings
@@ -22,7 +23,7 @@ warnings.filterwarnings("ignore", message="Field name .* shadows an attribute")
 warnings.filterwarnings("ignore", message="`max_items` is deprecated and will be removed, use `max_length` instead")
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -42,7 +43,7 @@ POSTGRES_USER = os.environ.get("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "postgres")
 POSTGRES_COLLECTION_NAME = os.environ.get("POSTGRES_COLLECTION_NAME", "memories")
 
-NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_URI = os.environ.get("NEO4J_URI") or os.environ.get("NEO4J_URL", "bolt://neo4j:7687")
 NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "mem0graph")
 
@@ -86,12 +87,94 @@ DEFAULT_CONFIG = {
     "history_db_path": HISTORY_DB_PATH,
 }
 
+# Add graph_store configuration if NEO4J_URI or NEO4J_URL is explicitly set
+if NEO4J_URI and NEO4J_URI != "bolt://neo4j:7687" or os.environ.get("NEO4J_URI") or os.environ.get("NEO4J_URL"):
+    DEFAULT_CONFIG["graph_store"] = {
+        "provider": "neo4j",
+        "config": {
+            "url": NEO4J_URI,
+            "username": NEO4J_USERNAME,
+            "password": NEO4J_PASSWORD
+        }
+    }
+
 
 MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)
+
+# Global graph memory cache for performance optimization
+GRAPH_MEMORY_CACHE = {}
+CACHE_LOCK = threading.Lock()
 
 # Global export task storage and executor
 EXPORT_TASKS = {}  # {task_id: {"status": str, "result": Any, "error": str, "created_at": datetime}}
 EXPORT_EXECUTOR = ThreadPoolExecutor(max_workers=3)
+
+
+def get_graph_enabled_memory():
+    """
+    Get or create a cached graph-enabled Memory instance.
+
+    Returns:
+        Memory: A Memory instance with graph capabilities enabled
+
+    Raises:
+        HTTPException: If graph memory is not configured
+    """
+    cache_key = "graph_enabled"
+
+    with CACHE_LOCK:
+        if cache_key not in GRAPH_MEMORY_CACHE:
+            # Check if graph store is configured
+            if "graph_store" not in DEFAULT_CONFIG:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Graph memory is not configured. Please set NEO4J_URI environment variable."
+                )
+
+            # Create graph-enabled configuration
+            graph_config = DEFAULT_CONFIG.copy()
+
+            # Create and cache the Memory instance
+            try:
+                GRAPH_MEMORY_CACHE[cache_key] = Memory.from_config(graph_config)
+                logging.info("Created and cached graph-enabled Memory instance")
+            except Exception as e:
+                logging.error(f"Failed to create graph-enabled Memory instance: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to initialize graph memory: {str(e)}"
+                )
+
+        return GRAPH_MEMORY_CACHE[cache_key]
+
+
+def clear_graph_memory_cache():
+    """
+    Clear the graph memory cache.
+
+    This function can be used to force recreation of graph memory instances,
+    useful for configuration changes or memory management.
+    """
+    with CACHE_LOCK:
+        if GRAPH_MEMORY_CACHE:
+            logging.info("Clearing graph memory cache")
+            GRAPH_MEMORY_CACHE.clear()
+
+
+def get_memory_instance_for_request(enable_graph: bool):
+    """
+    Get the appropriate Memory instance for a request.
+
+    Args:
+        enable_graph (bool): Whether graph memory is requested
+
+    Returns:
+        Memory: Either the main MEMORY_INSTANCE or a cached graph-enabled instance
+    """
+    if enable_graph and not MEMORY_INSTANCE.enable_graph:
+        return get_graph_enabled_memory()
+    else:
+        return MEMORY_INSTANCE
 
 app = FastAPI(
     title="Mem0 REST APIs",
@@ -179,6 +262,8 @@ class MemoryCreate(BaseModel):
     includes: Optional[str] = Field(None, description="Include only specific types of memories")
     excludes: Optional[str] = Field(None, description="Exclude specific types of memories")
     timestamp: Optional[int] = Field(None, description="Unix timestamp (seconds since epoch) for when the memory was created")
+    enable_graph: Optional[bool] = Field(None, description="Enable graph memory processing for relationship extraction")
+    output_format: Optional[str] = Field(None, description="Output format version (v1.1 for graph relations)")
 
     @field_validator("timestamp")
     @classmethod
@@ -193,6 +278,14 @@ class MemoryCreate(BaseModel):
                 raise ValueError(f"Invalid timestamp: {e}")
         return v
 
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, v):
+        """Validate output_format parameter."""
+        if v is not None and v not in ["v1.1"]:
+            raise ValueError("Invalid output_format. Supported formats: v1.1")
+        return v
+
 
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query.")
@@ -203,6 +296,16 @@ class SearchRequest(BaseModel):
     keyword_search: Optional[bool] = Field(False, description="Enable BM25 keyword search")
     rerank: Optional[bool] = Field(False, description="Enable LLM-based reranking")
     filter_memories: Optional[bool] = Field(False, description="Enable intelligent memory filtering")
+    enable_graph: Optional[bool] = Field(False, description="Enable graph memory search for relationship-based results")
+    output_format: Optional[str] = Field(None, description="Output format version (v1.1 for graph relations)")
+
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, v):
+        """Validate output_format parameter."""
+        if v is not None and v not in ["v1.1"]:
+            raise ValueError("Invalid output_format. Supported formats: v1.1")
+        return v
 
 
 class UpdateMemoryRequest(BaseModel):
@@ -256,7 +359,28 @@ def set_config(config: Dict[str, Any]):
     """Set memory configuration."""
     global MEMORY_INSTANCE
     MEMORY_INSTANCE = Memory.from_config(config)
+    # Clear graph memory cache when configuration changes
+    clear_graph_memory_cache()
     return {"message": "Configuration set successfully"}
+
+
+@app.post("/cache/clear", summary="Clear graph memory cache")
+def clear_cache():
+    """Clear the graph memory cache to force recreation of instances."""
+    clear_graph_memory_cache()
+    return {"message": "Graph memory cache cleared successfully"}
+
+
+@app.get("/cache/status", summary="Get cache status")
+def get_cache_status():
+    """Get information about the current cache status."""
+    with CACHE_LOCK:
+        cache_info = {
+            "cached_instances": len(GRAPH_MEMORY_CACHE),
+            "cache_keys": list(GRAPH_MEMORY_CACHE.keys()),
+            "main_instance_graph_enabled": getattr(MEMORY_INSTANCE, 'enable_graph', False)
+        }
+    return cache_info
 
 
 @app.post("/v1/memories/", summary="Create memories")
@@ -295,31 +419,55 @@ def add_memory(memory_create: MemoryCreate):
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
-    # Prepare parameters excluding messages and custom_instructions (handled separately)
-    params = {k: v for k, v in memory_create.model_dump().items() 
-              if v is not None and k not in ["messages", "custom_instructions"]}
+    # Extract graph memory parameters
+    enable_graph = memory_create.enable_graph
+    output_format = memory_create.output_format
+
+    # Prepare parameters excluding messages, custom_instructions, enable_graph, and output_format (handled separately)
+    params = {k: v for k, v in memory_create.model_dump().items()
+              if v is not None and k not in ["messages", "custom_instructions", "enable_graph", "output_format"]}
 
     try:
+        # Get the appropriate memory instance (cached if graph memory is needed)
+        memory_instance = get_memory_instance_for_request(enable_graph)
+
         # Handle custom_instructions by temporarily modifying the memory instance
         if memory_create.custom_instructions is not None:
             # Store original instructions
-            original_instructions = MEMORY_INSTANCE.custom_fact_extraction_prompt
-            
+            original_instructions = memory_instance.custom_fact_extraction_prompt
+
             try:
                 # Temporarily set custom instructions
-                MEMORY_INSTANCE.custom_fact_extraction_prompt = memory_create.custom_instructions
-                
+                memory_instance.custom_fact_extraction_prompt = memory_create.custom_instructions
+
                 # Add memories with custom instructions
-                response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
-                
+                response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+
             finally:
                 # Always restore original instructions
-                MEMORY_INSTANCE.custom_fact_extraction_prompt = original_instructions
+                memory_instance.custom_fact_extraction_prompt = original_instructions
         else:
             # Normal processing without custom instructions
-            response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+            response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], **params)
 
-        return JSONResponse(content=response)
+        # Process response based on output_format and enable_graph
+        if output_format == "v1.1" and enable_graph:
+            # Return full response with relations if available
+            if isinstance(response, dict) and "relations" in response:
+                return JSONResponse(content=response)
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(response, dict):
+                    response["relations"] = []
+                else:
+                    response = {"results": response, "relations": []}
+                return JSONResponse(content=response)
+        else:
+            # Return standard response format
+            if isinstance(response, dict) and "results" in response:
+                return JSONResponse(content=response["results"])
+            else:
+                return JSONResponse(content=response)
     except Exception as e:
         logging.exception("Error in add_memory:")  # This will log the full traceback
         raise HTTPException(status_code=500, detail=str(e))
@@ -330,15 +478,49 @@ def get_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of memories to return"),
+    enable_graph: Optional[bool] = Query(False, description="Enable graph memory processing for relationship extraction"),
+    output_format: Optional[str] = Query(None, description="Output format version (v1.1 for graph relations)")
 ):
     """Retrieve stored memories."""
     if not any([user_id, run_id, agent_id]):
         raise HTTPException(status_code=400, detail="At least one identifier is required.")
+
+    # Validate output_format
+    if output_format is not None and output_format not in ["v1.1"]:
+        raise HTTPException(status_code=400, detail="Invalid output_format. Supported formats: v1.1")
+
     try:
+        # Prepare base parameters
         params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
+            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "limit": limit}.items() if v is not None
         }
-        return MEMORY_INSTANCE.get_all(**params)
+
+        # Get the appropriate memory instance (cached if graph memory is needed)
+        memory_instance = get_memory_instance_for_request(enable_graph)
+
+        # Get all memories
+        response = memory_instance.get_all(**params)
+
+        # Process response based on output_format and enable_graph
+        if output_format == "v1.1" and enable_graph:
+            # Return full response with relations if available
+            if isinstance(response, dict) and "relations" in response:
+                return JSONResponse(content=response)
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(response, dict):
+                    response["relations"] = []
+                else:
+                    response = {"results": response, "relations": []}
+                return JSONResponse(content=response)
+        else:
+            # Return standard response format
+            if isinstance(response, dict) and "results" in response:
+                return JSONResponse(content=response["results"])
+            else:
+                return JSONResponse(content=response)
+
     except Exception as e:
         logging.exception("Error in get_all_memories:")
         raise HTTPException(status_code=500, detail=str(e))
@@ -358,12 +540,41 @@ def get_memory(memory_id: str):
 def search_memories(search_req: SearchRequest):
     """Search for memories based on a query."""
     try:
-        # Extract all parameters except query, including boolean parameters with False values
-        params = {k: v for k, v in search_req.model_dump().items() if k != "query"}
+        # Extract graph memory parameters
+        enable_graph = search_req.enable_graph
+        output_format = search_req.output_format
+
+        # Extract all parameters except query, enable_graph, and output_format
+        params = {k: v for k, v in search_req.model_dump().items()
+                  if k not in ["query", "enable_graph", "output_format"]}
         # Remove None values but keep False values for boolean parameters
         params = {k: v for k, v in params.items() if v is not None}
-        
-        return MEMORY_INSTANCE.search(query=search_req.query, **params)
+
+        # Get the appropriate memory instance (cached if graph memory is needed)
+        memory_instance = get_memory_instance_for_request(enable_graph)
+
+        # Perform search
+        response = memory_instance.search(query=search_req.query, **params)
+
+        # Process response based on output_format and enable_graph
+        if output_format == "v1.1" and enable_graph:
+            # Return full response with relations if available
+            if isinstance(response, dict) and "relations" in response:
+                return JSONResponse(content=response)
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(response, dict):
+                    response["relations"] = []
+                else:
+                    response = {"results": response, "relations": []}
+                return JSONResponse(content=response)
+        else:
+            # Return standard response format
+            if isinstance(response, dict) and "results" in response:
+                return JSONResponse(content=response["results"])
+            else:
+                return JSONResponse(content=response)
+
     except Exception as e:
         logging.exception("Error in search_memories:")
         raise HTTPException(status_code=500, detail=str(e))
