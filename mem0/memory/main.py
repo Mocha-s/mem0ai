@@ -33,6 +33,13 @@ from mem0.memory.utils import (
 )
 from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
 
+# Import advanced retrieval for enhanced search capabilities
+try:
+    from mem0.retrieval import AdvancedRetrieval
+except ImportError:
+    AdvancedRetrieval = None
+    logging.warning("AdvancedRetrieval not available. Advanced search features will be disabled.")
+
 
 def _build_filters_and_metadata(
     *,  # Enforce keyword-only arguments
@@ -621,6 +628,9 @@ class Memory(MemoryBase):
         limit: int = 100,
         filters: Optional[Dict[str, Any]] = None,
         threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False,
     ):
         """
         Searches for memories based on a query
@@ -632,6 +642,9 @@ class Memory(MemoryBase):
             limit (int, optional): Limit the number of results. Defaults to 100.
             filters (dict, optional): Filters to apply to the search. Defaults to None..
             threshold (float, optional): Minimum score for a memory to be included in the results. Defaults to None.
+            keyword_search (bool, optional): Enable BM25 keyword search for enhanced recall. Defaults to False.
+            rerank (bool, optional): Enable LLM-based reranking for improved relevance. Defaults to False.
+            filter_memories (bool, optional): Enable intelligent memory filtering for higher precision. Defaults to False.
 
         Returns:
             dict: A dictionary containing the search results, typically under a "results" key,
@@ -660,7 +673,10 @@ class Memory(MemoryBase):
         )
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_memories = executor.submit(self._search_vector_store, query, effective_filters, limit, threshold)
+            future_memories = executor.submit(
+                self._search_vector_store, query, effective_filters, limit, threshold,
+                keyword_search, rerank, filter_memories
+            )
             future_graph_entities = (
                 executor.submit(self.graph.search, query, effective_filters, limit) if self.enable_graph else None
             )
@@ -687,7 +703,16 @@ class Memory(MemoryBase):
         else:
             return {"results": original_memories}
 
-    def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
+    def _search_vector_store(
+        self,
+        query,
+        filters,
+        limit,
+        threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False
+    ):
         embeddings = self.embedding_model.embed(query, "search")
         memories = self.vector_store.search(query=query, vectors=embeddings, limit=limit, filters=filters)
 
@@ -722,6 +747,34 @@ class Memory(MemoryBase):
 
             if threshold is None or mem.score >= threshold:
                 original_memories.append(memory_item_dict)
+
+        # Apply advanced retrieval if any advanced features are enabled
+        if (keyword_search or rerank or filter_memories) and AdvancedRetrieval is not None:
+            try:
+                # Get LLM config if available
+                llm_config = {}
+                if hasattr(self, 'llm') and self.llm:
+                    llm_config = getattr(self.llm, 'config', {})
+
+                # Initialize advanced retrieval
+                advanced_retrieval = AdvancedRetrieval(llm_config)
+
+                # Run advanced retrieval synchronously
+                import asyncio
+                try:
+                    # Create a new event loop for async operations
+                    enhanced_memories = asyncio.run(advanced_retrieval.search(
+                        query, original_memories, keyword_search, rerank, filter_memories,
+                        threshold=threshold, limit=limit
+                    ))
+                    return enhanced_memories
+                except Exception as e:
+                    logging.warning(f"Advanced retrieval failed: {str(e)}, using original results")
+                    return original_memories
+
+            except Exception as e:
+                logging.error(f"Error in advanced retrieval: {str(e)}")
+                return original_memories
 
         return original_memories
 
@@ -1464,6 +1517,9 @@ class AsyncMemory(MemoryBase):
         limit: int = 100,
         filters: Optional[Dict[str, Any]] = None,
         threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False,
     ):
         """
         Searches for memories based on a query
@@ -1475,6 +1531,9 @@ class AsyncMemory(MemoryBase):
             limit (int, optional): Limit the number of results. Defaults to 100.
             filters (dict, optional): Filters to apply to the search. Defaults to None.
             threshold (float, optional): Minimum score for a memory to be included in the results. Defaults to None.
+            keyword_search (bool, optional): Enable BM25 keyword search for enhanced recall. Defaults to False.
+            rerank (bool, optional): Enable LLM-based reranking for improved relevance. Defaults to False.
+            filter_memories (bool, optional): Enable intelligent memory filtering for higher precision. Defaults to False.
 
         Returns:
             dict: A dictionary containing the search results, typically under a "results" key,
@@ -1503,7 +1562,9 @@ class AsyncMemory(MemoryBase):
             },
         )
 
-        vector_store_task = asyncio.create_task(self._search_vector_store(query, effective_filters, limit, threshold))
+        vector_store_task = asyncio.create_task(
+            self._search_vector_store(query, effective_filters, limit, threshold, keyword_search, rerank, filter_memories)
+        )
 
         graph_task = None
         if self.enable_graph:
@@ -1533,7 +1594,16 @@ class AsyncMemory(MemoryBase):
         else:
             return {"results": original_memories}
 
-    async def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
+    async def _search_vector_store(
+        self,
+        query,
+        filters,
+        limit,
+        threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False
+    ):
         embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
         memories = await asyncio.to_thread(
             self.vector_store.search, query=query, vectors=embeddings, limit=limit, filters=filters
@@ -1570,6 +1640,28 @@ class AsyncMemory(MemoryBase):
 
             if threshold is None or mem.score >= threshold:
                 original_memories.append(memory_item_dict)
+
+        # Apply advanced retrieval if any advanced features are enabled
+        if (keyword_search or rerank or filter_memories) and AdvancedRetrieval is not None:
+            try:
+                # Get LLM config if available
+                llm_config = {}
+                if hasattr(self, 'llm') and self.llm:
+                    llm_config = getattr(self.llm, 'config', {})
+
+                # Initialize advanced retrieval
+                advanced_retrieval = AdvancedRetrieval(llm_config)
+
+                # Run advanced retrieval asynchronously
+                enhanced_memories = await advanced_retrieval.search(
+                    query, original_memories, keyword_search, rerank, filter_memories,
+                    threshold=threshold, limit=limit
+                )
+                return enhanced_memories
+
+            except Exception as e:
+                logging.error(f"Error in advanced retrieval: {str(e)}")
+                return original_memories
 
         return original_memories
 

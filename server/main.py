@@ -1,6 +1,11 @@
+import sys
+import os
+# Add local packages to Python path for development
+sys.path.insert(0, "/app/packages")
+os.environ['PYTHONPATH'] = "/app/packages:" + os.environ.get('PYTHONPATH', '')
+
 import json
 import logging
-import os
 import time
 import uuid
 import warnings
@@ -275,7 +280,11 @@ def get_memory(memory_id: str):
 def search_memories(search_req: SearchRequest):
     """Search for memories based on a query."""
     try:
-        params = {k: v for k, v in search_req.model_dump().items() if v is not None and k != "query"}
+        # Extract all parameters except query, including boolean parameters with False values
+        params = {k: v for k, v in search_req.model_dump().items() if k != "query"}
+        # Remove None values but keep False values for boolean parameters
+        params = {k: v for k, v in params.items() if v is not None}
+        
         return MEMORY_INSTANCE.search(query=search_req.query, **params)
     except Exception as e:
         logging.exception("Error in search_memories:")
@@ -670,10 +679,24 @@ def search_memories_v2(request: V2SearchRequest):
         # Process complex filters
         processed_filters = process_v2_filters(request.filters or {})
 
-        # Search memories using processed filters
-        search_results = MEMORY_INSTANCE.search(query=request.query, **processed_filters)
+        # Prepare search parameters including advanced retrieval options
+        search_params = {
+            **processed_filters,
+            "limit": request.limit or 50
+        }
 
-        # Apply limit if specified
+        # Add advanced retrieval parameters if specified
+        if request.keyword_search is not None:
+            search_params["keyword_search"] = request.keyword_search
+        if request.rerank is not None:
+            search_params["rerank"] = request.rerank
+        if request.filter_memories is not None:
+            search_params["filter_memories"] = request.filter_memories
+
+        # Search memories using all parameters
+        search_results = MEMORY_INSTANCE.search(query=request.query, **search_params)
+
+        # Apply limit if specified (redundant safety check)
         if request.limit and isinstance(search_results, list):
             search_results = search_results[:request.limit]
 
@@ -682,7 +705,12 @@ def search_memories_v2(request: V2SearchRequest):
             "total_count": len(search_results) if isinstance(search_results, list) else 1,
             "query": request.query,
             "limit": request.limit,
-            "filters_applied": processed_filters
+            "filters_applied": processed_filters,
+            "advanced_retrieval": {
+                "keyword_search": request.keyword_search,
+                "rerank": request.rerank,
+                "filter_memories": request.filter_memories
+            }
         }
 
     except Exception as e:

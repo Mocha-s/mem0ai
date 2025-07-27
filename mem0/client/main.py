@@ -230,7 +230,12 @@ class MemoryClient:
             query: The search query string.
             version: The API version to use for the search endpoint.
             **kwargs: Additional parameters such as user_id, agent_id, app_id,
-                      top_k, filters.
+                      top_k, filters, keyword_search, rerank, filter_memories.
+
+                      Advanced retrieval parameters:
+                      - keyword_search (bool): Enable BM25 keyword search for enhanced recall.
+                      - rerank (bool): Enable LLM-based reranking for improved relevance.
+                      - filter_memories (bool): Enable intelligent memory filtering for higher precision.
 
         Returns:
             A list of dictionaries containing search results.
@@ -240,6 +245,13 @@ class MemoryClient:
         """
         payload = {"query": query}
         params = self._prepare_params(kwargs)
+
+        # Handle advanced retrieval parameters explicitly
+        advanced_params = ['keyword_search', 'rerank', 'filter_memories']
+        for param in advanced_params:
+            if param in kwargs:
+                payload[param] = kwargs[param]
+
         payload.update(params)
         response = self.client.post(f"/{version}/memories/search/", json=payload)
         response.raise_for_status()
@@ -1035,8 +1047,35 @@ class AsyncMemoryClient:
 
     @api_error_handler
     async def search(self, query: str, version: str = "v1", **kwargs) -> List[Dict[str, Any]]:
+        """Search memories based on a query asynchronously.
+
+        Args:
+            query: The search query string.
+            version: The API version to use for the search endpoint.
+            **kwargs: Additional parameters such as user_id, agent_id, app_id,
+                      top_k, filters, keyword_search, rerank, filter_memories.
+
+                      Advanced retrieval parameters:
+                      - keyword_search (bool): Enable BM25 keyword search for enhanced recall.
+                      - rerank (bool): Enable LLM-based reranking for improved relevance.
+                      - filter_memories (bool): Enable intelligent memory filtering for higher precision.
+
+        Returns:
+            A list of dictionaries containing search results.
+
+        Raises:
+            APIError: If the API request fails.
+        """
         payload = {"query": query}
-        payload.update(self._prepare_params(kwargs))
+        params = self._prepare_params(kwargs)
+
+        # Handle advanced retrieval parameters explicitly
+        advanced_params = ['keyword_search', 'rerank', 'filter_memories']
+        for param in advanced_params:
+            if param in kwargs:
+                payload[param] = kwargs[param]
+
+        payload.update(params)
         response = await self.async_client.post(f"/{version}/memories/search/", json=payload)
         response.raise_for_status()
         if "metadata" in kwargs:

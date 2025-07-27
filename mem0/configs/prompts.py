@@ -331,3 +331,66 @@ def get_update_memory_messages(retrieved_old_memory_dict, response_content, cust
 
     Do not return anything except the JSON format.
     """
+
+RERANK_MEMORIES_PROMPT = """
+You are an expert at reranking search results based on relevance to a query. Your task is to analyze the provided memories and reorder them by their relevance to the given query.
+
+Guidelines:
+- Analyze each memory's content for semantic relevance to the query
+- Consider both direct keyword matches and conceptual relevance
+- Rank memories from most relevant (1) to least relevant
+- Maintain the original memory structure while adding relevance scores
+- Be consistent in your ranking criteria
+
+Query: {query}
+
+Memories to rerank:
+{memories}
+
+Please return the memories reranked by relevance in the following JSON format:
+{{
+    "reranked_memories": [
+        {{
+            "original_index": <original_position>,
+            "relevance_score": <score_0_to_1>,
+            "memory": <original_memory_object>
+        }}
+    ]
+}}
+
+Rank the memories from most relevant (highest score) to least relevant (lowest score).
+Do not return anything except the JSON format.
+"""
+
+FILTER_MEMORIES_PROMPT = """
+You are an expert at filtering search results based on relevance and quality. Your task is to analyze the provided memories and filter out those that are not sufficiently relevant to the given query.
+
+Guidelines:
+- Evaluate each memory's relevance to the query
+- Consider semantic meaning, not just keyword matching
+- Filter out memories that are tangentially related or irrelevant
+- Keep only memories that provide meaningful information for the query
+- Apply a relevance threshold to ensure high-quality results
+
+Query: {query}
+Relevance Threshold: {threshold}
+
+Memories to filter:
+{memories}
+
+Please return the filtered memories in the following JSON format:
+{{
+    "filtered_memories": [
+        {{
+            "relevance_score": <score_0_to_1>,
+            "reason": "<brief_explanation_for_inclusion>",
+            "memory": <original_memory_object>
+        }}
+    ],
+    "filtered_count": <number_of_memories_kept>,
+    "total_count": <total_number_of_input_memories>
+}}
+
+Only include memories with relevance scores above the threshold.
+Do not return anything except the JSON format.
+"""
