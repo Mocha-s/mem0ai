@@ -93,11 +93,15 @@ export default class MemoryClient {
       }
 
       if (!instructions.trim()) {
-        throw new APIError("custom_instructions cannot be empty or whitespace-only");
+        throw new APIError(
+          "custom_instructions cannot be empty or whitespace-only",
+        );
       }
 
       if (instructions.length > 10000) {
-        throw new APIError("custom_instructions too long (max 10000 characters)");
+        throw new APIError(
+          "custom_instructions too long (max 10000 characters)",
+        );
       }
     }
   }
@@ -783,6 +787,20 @@ export default class MemoryClient {
       },
     );
     return response;
+  }
+
+  async reset(): Promise<{ message: string }> {
+    if (this.telemetryId === "") await this.ping();
+    this._validateOrgProject();
+    this._captureEvent("reset", []);
+
+    // Call deleteUsers() to delete all users, agents, apps and runs
+    // This will also delete all associated memories
+    await this.deleteUsers();
+
+    return {
+      message: "Client reset successful. All users and memories deleted.",
+    };
   }
 }
 
