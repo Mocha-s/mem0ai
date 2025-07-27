@@ -24,9 +24,10 @@ warnings.filterwarnings("ignore", message="`max_items` is deprecated and will be
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from mem0 import Memory
+from mem0.utils.timestamp import validate_unix_timestamp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -177,6 +178,20 @@ class MemoryCreate(BaseModel):
     version: Optional[str] = Field("v1", description="API version for memory creation. v1 (default) or v2 (contextual add).")
     includes: Optional[str] = Field(None, description="Include only specific types of memories")
     excludes: Optional[str] = Field(None, description="Exclude specific types of memories")
+    timestamp: Optional[int] = Field(None, description="Unix timestamp (seconds since epoch) for when the memory was created")
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_timestamp_field(cls, v):
+        """Validate timestamp parameter."""
+        if v is not None:
+            try:
+                # Use the timestamp validation utility
+                validate_unix_timestamp(v)
+                return v
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid timestamp: {e}")
+        return v
 
 
 class SearchRequest(BaseModel):
@@ -253,6 +268,16 @@ def add_memory(memory_create: MemoryCreate):
     # Validate version parameter
     if memory_create.version and memory_create.version not in ["v1", "v2"]:
         raise HTTPException(status_code=400, detail="Invalid version. Supported versions: v1, v2")
+
+    # Validate timestamp parameter if provided
+    if memory_create.timestamp is not None:
+        try:
+            # Additional validation with detailed logging
+            validate_unix_timestamp(memory_create.timestamp)
+            logging.info(f"Valid timestamp provided: {memory_create.timestamp}")
+        except (ValueError, TypeError) as e:
+            logging.warning(f"Invalid timestamp {memory_create.timestamp}: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid timestamp: {e}")
 
     # Validate custom_categories if provided
     if memory_create.custom_categories is not None:

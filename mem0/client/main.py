@@ -159,6 +159,10 @@ class MemoryClient:
                      - metadata (dict): Additional metadata for the memory
                      - filters (dict): Filters to apply during memory creation
                      - version (str): API version control
+                     - timestamp (int): Unix timestamp (seconds since epoch) for when
+                                       the memory was created. If not provided, uses
+                                       current time. Must be a valid timestamp not in
+                                       the future.
 
         Returns:
             A dictionary containing the API response with memory details,
@@ -194,6 +198,15 @@ class MemoryClient:
                 ...     messages=messages,
                 ...     user_id="alice",
                 ...     metadata={"source": "mobile_app", "timestamp": "2024-01-01"}
+                ... )
+
+            With custom timestamp (for historical data):
+                >>> import datetime
+                >>> past_time = int(datetime.datetime(2023, 1, 1).timestamp())
+                >>> result = client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     timestamp=past_time
                 ... )
 
         Note:
@@ -1083,6 +1096,10 @@ class AsyncMemoryClient:
                      - metadata (dict): Additional metadata for the memory
                      - filters (dict): Filters to apply during memory creation
                      - version (str): API version control
+                     - timestamp (int): Unix timestamp (seconds since epoch) for when
+                                       the memory was created. If not provided, uses
+                                       current time. Must be a valid timestamp not in
+                                       the future.
 
         Returns:
             A dictionary containing the API response with memory details,
@@ -1118,6 +1135,15 @@ class AsyncMemoryClient:
                 ...     messages=messages,
                 ...     user_id="alice",
                 ...     metadata={"source": "mobile_app", "timestamp": "2024-01-01"}
+                ... )
+
+            With custom timestamp (for historical data):
+                >>> import datetime
+                >>> past_time = int(datetime.datetime(2023, 1, 1).timestamp())
+                >>> result = await client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     timestamp=past_time
                 ... )
 
         Note:

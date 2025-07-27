@@ -169,6 +169,7 @@ export class Memory {
       metadata = {},
       filters = {},
       infer = true,
+      timestamp,
     } = config;
 
     if (userId) filters.userId = metadata.userId = userId;
@@ -193,6 +194,7 @@ export class Memory {
       metadata,
       filters,
       infer,
+      timestamp,
     );
 
     // Add to graph store if available
@@ -219,6 +221,7 @@ export class Memory {
     metadata: Record<string, any>,
     filters: SearchFilters,
     infer: boolean,
+    timestamp?: number,
   ): Promise<MemoryItem[]> {
     if (!infer) {
       const returnedMemories: MemoryItem[] = [];
@@ -230,6 +233,7 @@ export class Memory {
           message.content as string,
           {},
           metadata,
+          timestamp,
         );
         returnedMemories.push({
           id: memoryId,
@@ -329,6 +333,7 @@ export class Memory {
               action.text,
               newMessageEmbeddings,
               metadata,
+              timestamp,
             );
             results.push({
               id: memoryId,
@@ -619,6 +624,7 @@ export class Memory {
     data: string,
     existingEmbeddings: Record<string, number[]>,
     metadata: Record<string, any>,
+    timestamp?: number,
   ): Promise<string> {
     const memoryId = uuidv4();
     const embedding =
@@ -628,7 +634,7 @@ export class Memory {
       ...metadata,
       data,
       hash: createHash("md5").update(data).digest("hex"),
-      createdAt: new Date().toISOString(),
+      createdAt: timestamp ? new Date(timestamp * 1000).toISOString() : new Date().toISOString(),
     };
 
     await this.vectorStore.insert([embedding], [memoryId], [memoryMetadata]);

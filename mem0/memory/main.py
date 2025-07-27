@@ -218,6 +218,7 @@ class Memory(MemoryBase):
         version: Optional[str] = "v1",
         includes: Optional[str] = None,
         excludes: Optional[str] = None,
+        timestamp: Optional[int] = None,
     ):
         """
         Create a new memory.
@@ -331,7 +332,7 @@ class Memory(MemoryBase):
             raise ValueError("messages must be str, dict, or list[dict]")
 
         if agent_id is not None and memory_type == MemoryType.PROCEDURAL.value:
-            results = self._create_procedural_memory(messages, metadata=processed_metadata, prompt=prompt)
+            results = self._create_procedural_memory(messages, metadata=processed_metadata, prompt=prompt, timestamp=timestamp)
             return results
 
         if self.config.llm.config.get("enable_vision"):
@@ -340,7 +341,7 @@ class Memory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer, includes, excludes)
+            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp)
             future2 = executor.submit(self._add_to_graph, messages, effective_filters)
 
             concurrent.futures.wait([future1, future2])
@@ -366,7 +367,7 @@ class Memory(MemoryBase):
 
         return {"results": vector_store_result}
 
-    def _add_to_vector_store(self, messages, metadata, filters, infer, includes=None, excludes=None):
+    def _add_to_vector_store(self, messages, metadata, filters, infer, includes=None, excludes=None, timestamp=None):
         if not infer:
             returned_memories = []
             for message_dict in messages:
@@ -390,7 +391,7 @@ class Memory(MemoryBase):
 
                 msg_content = message_dict["content"]
                 msg_embeddings = self.embedding_model.embed(msg_content, "add")
-                mem_id = self._create_memory(msg_content, msg_embeddings, per_msg_meta)
+                mem_id = self._create_memory(msg_content, msg_embeddings, per_msg_meta, timestamp)
 
                 returned_memories.append(
                     {
@@ -494,6 +495,7 @@ class Memory(MemoryBase):
                             data=action_text,
                             existing_embeddings=new_message_embeddings,
                             metadata=deepcopy(metadata),
+                            timestamp=timestamp,
                         )
                         returned_memories.append({"id": memory_id, "memory": action_text, "event": event_type})
                     elif event_type == "UPDATE":
@@ -940,7 +942,7 @@ class Memory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "sync"})
         return self.db.get_history(memory_id)
 
-    def _create_memory(self, data, existing_embeddings, metadata=None):
+    def _create_memory(self, data, existing_embeddings, metadata=None, timestamp=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
             embeddings = existing_embeddings[data]
@@ -950,7 +952,14 @@ class Memory(MemoryBase):
         metadata = metadata or {}
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        metadata["created_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
+
+        # Use custom timestamp if provided, otherwise use current UTC time
+        if timestamp is not None:
+            from mem0.utils.timestamp import convert_timestamp_to_utc_datetime, format_timestamp_for_storage
+            dt = convert_timestamp_to_utc_datetime(timestamp)
+            metadata["created_at"] = format_timestamp_for_storage(dt)
+        else:
+            metadata["created_at"] = datetime.now(pytz.UTC).isoformat()
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -1143,7 +1152,7 @@ class Memory(MemoryBase):
             # Fallback to just new messages if merging fails
             return new_messages
 
-    def _create_procedural_memory(self, messages, metadata=None, prompt=None):
+    def _create_procedural_memory(self, messages, metadata=None, prompt=None, timestamp=None):
         """
         Create a procedural memory
 
@@ -1174,7 +1183,7 @@ class Memory(MemoryBase):
 
         metadata["memory_type"] = MemoryType.PROCEDURAL.value
         embeddings = self.embedding_model.embed(procedural_memory, memory_action="add")
-        memory_id = self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata)
+        memory_id = self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata, timestamp=timestamp)
         capture_event("mem0._create_procedural_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
 
         result = {"results": [{"id": memory_id, "memory": procedural_memory, "event": "ADD"}]}
@@ -1356,6 +1365,7 @@ class AsyncMemory(MemoryBase):
         version: Optional[str] = "v1",
         includes: Optional[str] = None,
         excludes: Optional[str] = None,
+        timestamp: Optional[int] = None,
     ):
         """
         Create a new memory asynchronously.
@@ -1455,7 +1465,7 @@ class AsyncMemory(MemoryBase):
 
         if agent_id is not None and memory_type == MemoryType.PROCEDURAL.value:
             results = await self._create_procedural_memory(
-                messages, metadata=processed_metadata, prompt=prompt, llm=llm
+                messages, metadata=processed_metadata, prompt=prompt, llm=llm, timestamp=timestamp
             )
             return results
 
@@ -1465,7 +1475,7 @@ class AsyncMemory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         vector_store_task = asyncio.create_task(
-            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, includes, excludes)
+            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp)
         )
         graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters))
 
@@ -1497,6 +1507,7 @@ class AsyncMemory(MemoryBase):
         infer: bool,
         includes: Optional[str] = None,
         excludes: Optional[str] = None,
+        timestamp: Optional[int] = None,
     ):
         if not infer:
             returned_memories = []
@@ -1521,7 +1532,7 @@ class AsyncMemory(MemoryBase):
 
                 msg_content = message_dict["content"]
                 msg_embeddings = await asyncio.to_thread(self.embedding_model.embed, msg_content, "add")
-                mem_id = await self._create_memory(msg_content, msg_embeddings, per_msg_meta)
+                mem_id = await self._create_memory(msg_content, msg_embeddings, per_msg_meta, timestamp)
 
                 returned_memories.append(
                     {
@@ -1623,6 +1634,7 @@ class AsyncMemory(MemoryBase):
                                 data=action_text,
                                 existing_embeddings=new_message_embeddings,
                                 metadata=deepcopy(metadata),
+                                timestamp=timestamp,
                             )
                         )
                         memory_tasks.append((task, resp, "ADD", None))
@@ -2084,7 +2096,7 @@ class AsyncMemory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "async"})
         return await asyncio.to_thread(self.db.get_history, memory_id)
 
-    async def _create_memory(self, data, existing_embeddings, metadata=None):
+    async def _create_memory(self, data, existing_embeddings, metadata=None, timestamp=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
             embeddings = existing_embeddings[data]
@@ -2095,7 +2107,14 @@ class AsyncMemory(MemoryBase):
         metadata = metadata or {}
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        metadata["created_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
+
+        # Use custom timestamp if provided, otherwise use current UTC time
+        if timestamp is not None:
+            from mem0.utils.timestamp import convert_timestamp_to_utc_datetime, format_timestamp_for_storage
+            dt = convert_timestamp_to_utc_datetime(timestamp)
+            metadata["created_at"] = format_timestamp_for_storage(dt)
+        else:
+            metadata["created_at"] = datetime.now(pytz.UTC).isoformat()
 
         await asyncio.to_thread(
             self.vector_store.insert,
@@ -2294,7 +2313,7 @@ class AsyncMemory(MemoryBase):
             # Fallback to just new messages if merging fails
             return new_messages
 
-    async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None):
+    async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None, timestamp=None):
         """
         Create a procedural memory asynchronously
 
@@ -2338,7 +2357,7 @@ class AsyncMemory(MemoryBase):
 
         metadata["memory_type"] = MemoryType.PROCEDURAL.value
         embeddings = await asyncio.to_thread(self.embedding_model.embed, procedural_memory, memory_action="add")
-        memory_id = await self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata)
+        memory_id = await self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata, timestamp=timestamp)
         capture_event("mem0._create_procedural_memory", self, {"memory_id": memory_id, "sync_type": "async"})
 
         result = {"results": [{"id": memory_id, "memory": procedural_memory, "event": "ADD"}]}
