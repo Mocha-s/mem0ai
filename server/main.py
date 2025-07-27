@@ -13,7 +13,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import fcntl
 
 # Filter out compatibility and deprecation warnings
@@ -56,6 +56,7 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE", "0.1"))
+OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "2000"))
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/data/history.db")
 
 DEFAULT_CONFIG = {
@@ -73,7 +74,10 @@ DEFAULT_CONFIG = {
             "api_key": OPENAI_API_KEY,
             "model": OPENAI_MODEL,
             "temperature": OPENAI_TEMPERATURE,
-            "openai_base_url": OPENAI_BASE_URL
+            "max_tokens": OPENAI_MAX_TOKENS,
+            "openai_base_url": OPENAI_BASE_URL,
+            "enable_vision": True,
+            "vision_details": "auto"
         }
     },
     "embedder": {
@@ -240,7 +244,7 @@ def health_check():
 
 class Message(BaseModel):
     role: str = Field(..., description="Role of the message (user or assistant).")
-    content: str = Field(..., description="Message content.")
+    content: Union[str, Dict[str, Any]] = Field(..., description="Message content (string or multimodal object).")
 
 
 class MemoryCreate(BaseModel):
