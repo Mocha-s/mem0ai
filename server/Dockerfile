@@ -2,6 +2,10 @@
 # 阶段 1: 构建依赖
 FROM python:3.12-slim as builder
 
+# 配置 Debian 国内镜像源以加速包下载
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources || true
+
+
 # 安装构建 Python 包所需的系统依赖
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -22,6 +26,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY server/requirements.txt .
 RUN pip install --upgrade pip && \
     pip install -r requirements.txt
+# 配置 pip 使用国内镜像源加速下载
+RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
+
 
 # 阶段 2: 生产运行时
 FROM python:3.12-slim as production
@@ -49,6 +57,20 @@ RUN mkdir -p /app/data && \
     chown -R mem0:mem0 /app/data && \
     chmod -R 755 /app/data
 
+# 创建权限初始化脚本
+RUN echo '#!/bin/sh\n\
+# 确保数据目录权限正确\n\
+if [ -d "/app/data" ]; then\n\
+    echo "Setting up data directory permissions..."\n\
+    chown -R mem0:mem0 /app/data 2>/dev/null || true\n\
+    chmod -R 755 /app/data 2>/dev/null || true\n\
+    # SQLite数据库文件需要写权限\n\
+    find /app/data -name "*.db" -exec chmod 664 {} \; 2>/dev/null || true\n\
+    echo "Data directory permissions setup complete."\n\
+fi\n\
+exec "$@"' > /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
+
 # 复制应用代码
 COPY --chown=mem0:mem0 . .
 
@@ -67,4 +89,5 @@ ENV MEM0_DATA_PATH=/app/data
 ENV API_PORT=8000
 
 # 生产命令（生产环境无重载）
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${API_PORT:-8000}"]

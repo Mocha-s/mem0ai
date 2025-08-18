@@ -32,7 +32,11 @@ class MCPConfig:
     
     # Mem0 service settings
     mem0_base_url: str = "http://localhost:8000"
-    mem0_api_version: str = "v1"  # v1 or v2
+    mem0_api_version: str = "v1"  # v1 or v2 - keep v1 as default for backward compatibility
+    
+    # Mem0 client settings (for API key and base URL compatibility)
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
     
     # Transport settings
     transport: str = "http"  # http or stdio
@@ -59,6 +63,10 @@ class MCPConfig:
         parsed_url = urlparse(self.mem0_base_url)
         if not parsed_url.scheme or not parsed_url.netloc:
             raise ValueError(f"Invalid Mem0 base URL: {self.mem0_base_url}")
+        
+        # Set base_url from mem0_base_url if not explicitly set
+        if self.base_url is None:
+            self.base_url = self.mem0_base_url
 
 
 def get_mcp_config() -> MCPConfig:
@@ -87,6 +95,10 @@ def get_mcp_config() -> MCPConfig:
     
     config.mem0_base_url = os.getenv("MEM0_BASE_URL", config.mem0_base_url)
     config.mem0_api_version = os.getenv("MEM0_API_VERSION", config.mem0_api_version)
+    
+    # Set API key and base URL for Mem0 client compatibility
+    config.api_key = os.getenv("MEM0_API_KEY", config.api_key)
+    config.base_url = os.getenv("MEM0_BASE_URL", config.mem0_base_url)  # Use mem0_base_url as fallback
     
     config.transport = os.getenv("MCP_TRANSPORT", config.transport)
     config.enable_streaming = os.getenv("MCP_ENABLE_STREAMING", str(config.enable_streaming)).lower() == "true"

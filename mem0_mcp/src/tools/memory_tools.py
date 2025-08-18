@@ -1,13 +1,14 @@
 """
-Memory management tools for Mem0 MCP server
+Enhanced memory management tools implementing the hybrid architecture design
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
+from enum import Enum
 
 from .base_tool import BaseTool, ToolResult
 from ..client.mem0_client import Mem0HTTPClient
-from ..client.adapters import V1Adapter, V2Adapter, BaseAdapter
+from ..client.adapters import V1Adapter, V2Adapter, HybridAdapter, BaseAdapter
 from ..config.settings import MCPConfig
 from ..protocol.jsonrpc import JSONRPCHandler, JSONRPCResponse
 from ..protocol.message_types import ToolsCallResponse
@@ -15,297 +16,351 @@ from ..utils.errors import ToolExecutionError
 from ..utils.validators import (
     validate_memory_params,
     validate_search_params,
-    validate_memory_id,
-    validate_batch_delete_params,
     validate_required_fields
 )
 from ..utils.logger import get_logger
+from .strategies import (
+    BaseStrategy,
+    StandardStrategy,
+    ContextualAddV2Strategy,
+    MultimodalStrategy,
+    GraphMemoryStrategy,
+    AdvancedRetrievalStrategy,
+    GraphSearchStrategy
+)
 
 logger = get_logger(__name__)
 
 
 class AddMemoryTool(BaseTool):
-    """Tool for adding memories from messages"""
-    
+    """Tool for adding memories from conversation messages"""
+
     def __init__(self, adapter: BaseAdapter):
         super().__init__(
             name="add_memory",
-            description="Add new memories from messages"
+            description="Enhanced tool for adding memories with contextual processing, multimodal support, graph memory, and custom categories"
         )
         self.adapter = adapter
-    
-    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
-        """Execute add_memory tool"""
-        try:
-            await self.validate_arguments(arguments)
-            
-            # Extract required parameters
-            messages = arguments["messages"]
-            
-            # Get user identity from context or arguments
-            identity = self.get_user_identity(arguments)
-            
-            # Optional parameters
-            metadata = arguments.get("metadata", {})
-            
-            # Build parameters for API call using resolved identity
-            params = {}
-            if identity.user_id:
-                params["user_id"] = identity.user_id
-            if identity.agent_id:
-                params["agent_id"] = identity.agent_id
-            if identity.run_id:
-                params["run_id"] = identity.run_id
-            if metadata:
-                params["metadata"] = metadata
-            
-            self.logger.debug(f"Adding memory for identity: {identity.get_primary_id()}")
-            
-            # Call Mem0 API
-            response = await self.adapter.add_memory(messages, **params)
-            
-            # Debug: Print response type and content
-            self.logger.debug(f"add_memory response type: {type(response)}")
-            self.logger.debug(f"add_memory response: {response}")
-            
-            # Handle different response formats
-            if isinstance(response, list):
-                # Response is a list, likely from newer API version
-                if len(response) > 0:
-                    memory = response[0]
-                    result_text = f"Successfully added memory"
-                    if isinstance(memory, dict):
-                        if "id" in memory:
-                            result_text += f" with ID: {memory['id']}"
-                        if "memory" in memory or "text" in memory:
-                            content = memory.get("memory") or memory.get("text", "")
-                            result_text += f"\nMemory content: {content}"
-                    
-                    content = [
-                        {"type": "text", "text": result_text},
-                        {"type": "text", "text": f"Full response: {json.dumps(response, indent=2)}"}
-                    ]
-                    return ToolResult(content=content)
-                else:
-                    return ToolResult.error("Empty response from Mem0 API")
-            
-            # Format response for MCP (original dict format)
-            elif isinstance(response, dict) and response.get("success"):
-                result_text = f"Successfully added memory"
-                if "results" in response and response["results"]:
-                    memories = response["results"]
-                    if isinstance(memories, list) and len(memories) > 0:
-                        memory = memories[0]
-                        if "id" in memory:
-                            result_text += f" with ID: {memory['id']}"
-                        if "memory" in memory:
-                            result_text += f"\nMemory content: {memory['memory']}"
-                
-                # Return detailed response
-                content = [
-                    {"type": "text", "text": result_text},
-                    {"type": "text", "text": f"Full response: {json.dumps(response, indent=2)}"}
-                ]
-                return ToolResult(content=content)
-            else:
-                error_msg = response.get("error", "Unknown error occurred")
-                return ToolResult.error(f"Failed to add memory: {error_msg}")
-                
-        except Exception as e:
-            self.logger.error(f"Error in add_memory: {str(e)}")
-            return ToolResult.error(str(e))
-    
+
     def get_input_schema(self) -> Dict[str, Any]:
-        """Get input schema for add_memory"""
-        from ..protocol.message_types import ADD_MEMORY_SCHEMA
-        return ADD_MEMORY_SCHEMA
+        """Define the input schema for add_memory tool"""
+        return {
+            "type": "object",
+            "required": ["messages"],
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "description": "List of conversation messages to add to memory",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "role": {"type": "string"},
+                            "content": {"type": "string"}
+                        },
+                        "required": ["role", "content"]
+                    }
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the user"
+                },
+                "version": {
+                    "type": "string",
+                    "description": "API version ('v1' or 'v2' for contextual processing)"
+                },
+                "enable_graph": {
+                    "type": "boolean",
+                    "description": "Enable graph memory processing for entity and relationship extraction"
+                },
+                "output_format": {
+                    "type": "string",
+                    "description": "Output format for graph memory responses"
+                },
+                "multimodal_content": {
+                    "type": "object",
+                    "description": "Multimodal content configuration"
+                },
+                "custom_categories": {
+                    "type": "array",
+                    "description": "Custom categorization rules"
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Additional metadata for the memory"
+                },
+                "infer": {
+                    "type": "boolean",
+                    "description": "Whether to infer additional information from the content"
+                }
+            }
+        }
+
+    def _select_strategy(self, arguments: Dict[str, Any]) -> BaseStrategy:
+        """
+        Select appropriate strategy based on arguments
+
+        Args:
+            arguments: Dictionary containing operation parameters
+
+        Returns:
+            Selected strategy instance
+        """
+        # Check for Contextual Add v2
+        if arguments.get("version") == "v2":
+            logger.debug("Selected ContextualAddV2Strategy based on version=v2")
+            return ContextualAddV2Strategy()
+
+        # Check for Graph Memory
+        if arguments.get("enable_graph"):
+            logger.debug("Selected GraphMemoryStrategy based on enable_graph=True")
+            return GraphMemoryStrategy()
+
+        # Check for Multimodal Support
+        messages = arguments.get("messages", [])
+        if self._has_multimodal_content(messages):
+            logger.debug("Selected MultimodalStrategy based on multimodal content detection")
+            return MultimodalStrategy()
+
+        # Default to standard strategy
+        logger.debug("Selected StandardStrategy as default")
+        return StandardStrategy()
+
+    def _has_multimodal_content(self, messages: List[Dict[str, Any]]) -> bool:
+        """
+        Check if messages contain multimodal content
+
+        Args:
+            messages: List of message dictionaries
+
+        Returns:
+            True if multimodal content is detected
+        """
+        multimodal_types = ["image_url", "mdx_url", "pdf_url"]
+
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, dict) and "type" in content:
+                if content.get("type") in multimodal_types:
+                    return True
+
+        return False
+
+    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
+        """Execute add_memory operation with strategy pattern"""
+        try:
+            # Get user identity
+            user_id = self.get_primary_user_id(arguments)
+
+            # Validate required fields
+            validate_required_fields(arguments, ["messages"])
+
+            # Add user_id to arguments if not present
+            if "user_id" not in arguments:
+                arguments["user_id"] = user_id
+
+            # Select and execute strategy
+            strategy = self._select_strategy(arguments)
+            logger.info(f"Executing add_memory with strategy: {strategy.name}")
+
+            result = await strategy.execute(arguments, self.adapter)
+
+            return ToolResult.success(
+                "Memory added successfully",
+                structured_content=result
+            )
+
+        except Exception as e:
+            logger.error(f"Add_memory execution error: {e}")
+            return ToolResult.error(f"Memory addition failed: {str(e)}")
 
 
 class SearchMemoriesTool(BaseTool):
-    """Tool for searching memories"""
-    
+    """Tool for searching memories with advanced retrieval and filtering"""
+
     def __init__(self, adapter: BaseAdapter):
         super().__init__(
             name="search_memories",
-            description="Search memories using natural language query"
+            description="Enhanced tool for searching memories with advanced retrieval, filtering, and graph memory support"
         )
         self.adapter = adapter
-    
-    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
-        """Execute search_memories tool"""
-        try:
-            await self.validate_arguments(arguments)
-            
-            # Extract required parameters
-            query = arguments["query"]
-            
-            # Get user identity from context or arguments
-            identity = self.get_user_identity(arguments)
-            
-            # Optional parameters
-            limit = arguments.get("limit")
-            filters = arguments.get("filters", {})
-            
-            # Build parameters for API call using resolved identity
-            params = {}
-            if identity.user_id:
-                params["user_id"] = identity.user_id
-            if identity.agent_id:
-                params["agent_id"] = identity.agent_id
-            if identity.run_id:
-                params["run_id"] = identity.run_id
-            if limit:
-                params["limit"] = limit
-            if filters:
-                params["filters"] = filters
-            
-            self.logger.debug(f"Searching memories for identity: {identity.get_primary_id()}")
-            
-            # Call Mem0 API
-            response = await self.adapter.search_memories(query, **params)
-            
-            # Debug: Print response type and content
-            self.logger.debug(f"search_memories response type: {type(response)}")
-            self.logger.debug(f"search_memories response: {response}")
-            
-            # Handle different response formats
-            if isinstance(response, list):
-                # Response is a list, likely from newer API version
-                memories = response
-            elif isinstance(response, dict) and (response.get("success") or "results" in response):
-                # Original dict format
-                memories = response.get("results", [])
-            else:
-                return ToolResult.error(f"Unexpected response format: {type(response)}")
-                
-            if memories:
-                if not memories:
-                    return ToolResult.success("No memories found matching the query.")
-                
-                # Format memories for display
-                result_lines = [f"Found {len(memories)} memories:"]
-                
-                for i, memory in enumerate(memories[:10], 1):  # Limit to first 10
-                    memory_id = memory.get("id", "unknown")
-                    memory_content = memory.get("memory", "")
-                    score = memory.get("score", "N/A")
-                    
-                    result_lines.append(f"\n{i}. ID: {memory_id}")
-                    result_lines.append(f"   Score: {score}")
-                    result_lines.append(f"   Content: {memory_content}")
-                
-                if len(memories) > 10:
-                    result_lines.append(f"\n... and {len(memories) - 10} more memories")
-                
-                content = [
-                    {"type": "text", "text": "\n".join(result_lines)},
-                    {"type": "text", "text": f"Full response: {json.dumps(response, indent=2)}"}
-                ]
-                return ToolResult(content=content)
-            else:
-                error_msg = response.get("error", "Unknown error occurred")
-                return ToolResult.error(f"Failed to search memories: {error_msg}")
-                
-        except Exception as e:
-            self.logger.error(f"Error in search_memories: {str(e)}")
-            return ToolResult.error(str(e))
-    
+
     def get_input_schema(self) -> Dict[str, Any]:
-        """Get input schema for search_memories"""
-        from ..protocol.message_types import SEARCH_MEMORIES_SCHEMA
-        return SEARCH_MEMORIES_SCHEMA
+        """Define the input schema for search_memories tool"""
+        return {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query to find relevant memories"
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the user"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 5
+                },
+                "enable_graph": {
+                    "type": "boolean",
+                    "description": "Enable graph memory search with entity and relationship queries"
+                },
+                "filter_memories": {
+                    "type": "boolean",
+                    "description": "Enable advanced memory filtering"
+                },
+                "filters": {
+                    "type": "object",
+                    "description": "Additional filters for memory search"
+                },
+                "keyword_search": {
+                    "type": "boolean",
+                    "description": "Enable keyword-based search in addition to semantic search"
+                },
+                "keyword_weight": {
+                    "type": "number",
+                    "description": "Weight for keyword search (0-1)",
+                    "minimum": 0,
+                    "maximum": 1
+                },
+                "metadata_filters": {
+                    "type": "object",
+                    "description": "Filter memories by metadata fields"
+                },
+                "output_format": {
+                    "type": "string",
+                    "description": "Output format for graph memory responses"
+                },
+                "rerank": {
+                    "type": "boolean",
+                    "description": "Enable result reranking for improved relevance"
+                },
+                "semantic_weight": {
+                    "type": "number",
+                    "description": "Weight for semantic search (0-1)",
+                    "minimum": 0,
+                    "maximum": 1
+                },
+                "time_range": {
+                    "type": "object",
+                    "description": "Filter memories by time range"
+                }
+            }
+        }
+
+    def _select_search_strategy(self, arguments: Dict[str, Any]) -> BaseStrategy:
+        """
+        Select appropriate search strategy based on arguments
+
+        Args:
+            arguments: Dictionary containing search parameters
+
+        Returns:
+            Selected search strategy instance
+        """
+        # Check for Graph Search
+        if arguments.get("enable_graph"):
+            logger.debug("Selected GraphSearchStrategy based on enable_graph=True")
+            return GraphSearchStrategy()
+
+        # Check for Advanced Retrieval
+        advanced_flags = ["keyword_search", "rerank", "filter_memories"]
+        if any(arguments.get(flag) for flag in advanced_flags):
+            logger.debug("Selected AdvancedRetrievalStrategy based on advanced retrieval flags")
+            return AdvancedRetrievalStrategy()
+
+        # Default to standard strategy
+        logger.debug("Selected StandardStrategy as default for search")
+        return StandardStrategy()
+
+    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
+        """Execute search_memories operation with strategy pattern"""
+        try:
+            # Get user identity
+            user_id = self.get_primary_user_id(arguments)
+
+            # Validate required fields
+            if not arguments.get("query"):
+                return ToolResult.error("Query parameter is required for search operations")
+
+            # Add user_id to arguments if not present
+            if "user_id" not in arguments:
+                arguments["user_id"] = user_id
+
+            # Select and execute search strategy
+            strategy = self._select_search_strategy(arguments)
+            logger.info(f"Executing search_memories with strategy: {strategy.name}")
+
+            result = await strategy.execute(arguments, self.adapter)
+
+            return ToolResult.success(
+                "Memory search completed",
+                structured_content=result
+            )
+
+        except Exception as e:
+            logger.error(f"Search_memories execution error: {e}")
+            return ToolResult.error(f"Memory search failed: {str(e)}")
+
+
+
+
 
 
 class GetMemoriesTool(BaseTool):
-    """Tool for getting memories"""
+    """Tool for retrieving memories"""
     
     def __init__(self, adapter: BaseAdapter):
         super().__init__(
             name="get_memories",
-            description="Get memories for a user, agent, or run"
+            description="Get memories for a user"
         )
         self.adapter = adapter
+    
+    def get_input_schema(self) -> Dict[str, Any]:
+        """Define the input schema for get_memories tool"""
+        return {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the user"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of memories to return",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 10
+                }
+            }
+        }
     
     async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         """Execute get_memories tool"""
         try:
-            await self.validate_arguments(arguments)
+            response = await self.adapter.get_memories(**arguments)
             
-            # Get user identity from context or arguments
-            identity = self.get_user_identity(arguments)
-            
-            # Build parameters for API call using resolved identity
-            params = {}
-            if identity.user_id:
-                params["user_id"] = identity.user_id
-            if identity.agent_id:
-                params["agent_id"] = identity.agent_id
-            if identity.run_id:
-                params["run_id"] = identity.run_id
-            
-            # Add any additional arguments (like limit, filters, etc.)
-            for key, value in arguments.items():
-                if key not in ["user_id", "agent_id", "run_id"] and value is not None:
-                    params[key] = value
-            
-            self.logger.debug(f"Getting memories for identity: {identity.get_primary_id()}")
-            
-            # Call Mem0 API
-            response = await self.adapter.get_memories(**params)
-            
-            # Debug: Print response type and content
-            self.logger.debug(f"get_memories response type: {type(response)}")
-            self.logger.debug(f"get_memories response: {response}")
-            
-            # Handle direct API response format (based on direct testing)
-            if isinstance(response, dict) and "results" in response:
-                # V1 API returns {"results": [...], "relations": [...]}
-                memories = response["results"]
-            elif isinstance(response, list):
-                # Direct list of memories
-                memories = response
+            if response.get("status") == "success":
+                memories = response.get("results", [])
+                return ToolResult.success(
+                    f"Retrieved {len(memories)} memories",
+                    structured_content=response
+                )
             else:
-                return ToolResult.error(f"Failed to get memories: Unknown error occurred")
-                
-            if not memories:
-                return ToolResult.success("No memories found.")
-                
-            # Format memories for display
-            result_lines = [f"Found {len(memories)} memories:"]
-            
-            for i, memory in enumerate(memories[:10], 1):  # Limit to first 10
-                memory_id = memory.get("id", "unknown")
-                memory_content = memory.get("memory", "")
-                created_at = memory.get("created_at", "unknown")
-                
-                result_lines.append(f"\n{i}. ID: {memory_id}")
-                result_lines.append(f"   Created: {created_at}")
-                result_lines.append(f"   Content: {memory_content}")
-                
-                if len(memories) > 10:
-                    result_lines.append(f"\n... and {len(memories) - 10} more memories")
-                
-                content = [
-                    {"type": "text", "text": "\n".join(result_lines)},
-                    {"type": "text", "text": f"Full response: {json.dumps(response, indent=2)}"}
-                ]
-                return ToolResult(content=content)
-            else:
-                error_msg = response.get("error", "Unknown error occurred")
+                error_msg = response.get("message", "Unknown error occurred")
                 return ToolResult.error(f"Failed to get memories: {error_msg}")
                 
         except Exception as e:
-            self.logger.error(f"Error in get_memories: {str(e)}")
-            return ToolResult.error(str(e))
-    
-    def get_input_schema(self) -> Dict[str, Any]:
-        """Get input schema for get_memories"""
-        from ..protocol.message_types import GET_MEMORIES_SCHEMA
-        return GET_MEMORIES_SCHEMA
+            logger.error(f"Get_memories execution error: {e}")
+            return ToolResult.error(f"Memory retrieval failed: {str(e)}")
 
 
 class GetMemoryByIdTool(BaseTool):
-    """Tool for getting a specific memory by ID"""
+    """Tool for retrieving a specific memory by ID"""
     
     def __init__(self, adapter: BaseAdapter):
         super().__init__(
@@ -314,338 +369,271 @@ class GetMemoryByIdTool(BaseTool):
         )
         self.adapter = adapter
     
+    def get_input_schema(self) -> Dict[str, Any]:
+        """Define the input schema for get_memory_by_id tool"""
+        return {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the memory"
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the user"
+                }
+            }
+        }
+    
     async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         """Execute get_memory_by_id tool"""
         try:
-            await self.validate_arguments(arguments)
+            response = await self.adapter.get_memory_by_id(**arguments)
             
-            memory_id = arguments["memory_id"]
-            
-            # Call Mem0 API
-            response = await self.adapter.get_memory_by_id(memory_id)
-            
-            # Handle direct API response format (based on direct testing)
-            if isinstance(response, dict) and "id" in response:
-                # Direct memory object from API
-                memory = response
-            elif isinstance(response, dict) and "result" in response:
-                # Wrapped response
-                memory = response["result"]
-            else:
-                return ToolResult.error(f"Failed to get memory: Unknown error occurred")
-                
-            if not memory:
-                return ToolResult.error(f"Memory with ID {memory_id} not found")
-                
-            # Format memory details
-            result_lines = [f"Memory Details (ID: {memory_id}):"]
-            result_lines.append(f"Content: {memory.get('memory', 'N/A')}")
-            result_lines.append(f"User ID: {memory.get('user_id', 'N/A')}")
-            result_lines.append(f"Created: {memory.get('created_at', 'N/A')}")
-            result_lines.append(f"Updated: {memory.get('updated_at', 'N/A')}")
-            
-            if memory.get("metadata"):
-                result_lines.append(f"Metadata: {json.dumps(memory['metadata'], indent=2)}")
-            
-            content = [
-                {"type": "text", "text": "\n".join(result_lines)},
-                {"type": "text", "text": f"Full response: {json.dumps(response, indent=2)}"}
-            ]
-            return ToolResult(content=content)
-                
-        except Exception as e:
-            self.logger.error(f"Error in get_memory_by_id: {str(e)}")
-            return ToolResult.error(str(e))
-    
-    def get_input_schema(self) -> Dict[str, Any]:
-        """Get input schema for get_memory_by_id"""
-        from ..protocol.message_types import GET_MEMORY_BY_ID_SCHEMA
-        return GET_MEMORY_BY_ID_SCHEMA
-
-
-class DeleteMemoryTool(BaseTool):
-    """Tool for deleting a specific memory"""
-    
-    def __init__(self, adapter: BaseAdapter):
-        super().__init__(
-            name="delete_memory",
-            description="Delete a specific memory by its ID"
-        )
-        self.adapter = adapter
-    
-    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
-        """Execute delete_memory tool"""
-        try:
-            await self.validate_arguments(arguments)
-            
-            memory_id = arguments["memory_id"]
-            
-            # Call Mem0 API
-            response = await self.adapter.delete_memory(memory_id)
-            
-            # Debug: Print response type and content
-            self.logger.debug(f"delete_memory response type: {type(response)}")
-            self.logger.debug(f"delete_memory response: {response}")
-            
-            # Handle different response formats
-            if isinstance(response, dict):
-                if response.get("success"):
-                    return ToolResult.success(f"Successfully deleted memory with ID: {memory_id}")
-                else:
-                    error_msg = response.get("error", "Unknown error occurred")
-                    return ToolResult.error(f"Failed to delete memory: {error_msg}")
-            elif isinstance(response, bool) and response:
-                # Some APIs might return just a boolean
-                return ToolResult.success(f"Successfully deleted memory with ID: {memory_id}")
-            else:
-                return ToolResult.error(f"Unexpected response format: {type(response)}")
-                
-        except Exception as e:
-            self.logger.error(f"Error in delete_memory: {str(e)}")
-            return ToolResult.error(str(e))
-    
-    def get_input_schema(self) -> Dict[str, Any]:
-        """Get input schema for delete_memory"""
-        from ..protocol.message_types import DELETE_MEMORY_SCHEMA
-        return DELETE_MEMORY_SCHEMA
-
-
-class BatchDeleteMemoriesTool(BaseTool):
-    """Tool for batch deleting memories"""
-    
-    def __init__(self, adapter: BaseAdapter):
-        super().__init__(
-            name="batch_delete_memories",
-            description="Delete all memories for a user, agent, or run"
-        )
-        self.adapter = adapter
-    
-    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
-        """Execute batch_delete_memories tool"""
-        try:
-            await self.validate_arguments(arguments)
-            
-            # Get user identity from context or arguments
-            identity = self.get_user_identity(arguments)
-            
-            # Build parameters for API call using resolved identity
-            params = {}
-            if identity.user_id:
-                params["user_id"] = identity.user_id
-            if identity.agent_id:
-                params["agent_id"] = identity.agent_id
-            if identity.run_id:
-                params["run_id"] = identity.run_id
-            
-            # Add any additional arguments
-            for key, value in arguments.items():
-                if key not in ["user_id", "agent_id", "run_id"] and value is not None:
-                    params[key] = value
-            
-            self.logger.debug(f"Batch deleting memories for identity: {identity.get_primary_id()}")
-            
-            # Call Mem0 API
-            response = await self.adapter.batch_delete_memories(**params)
-            
-            # Debug: Print response type and content
-            self.logger.debug(f"batch_delete_memories response type: {type(response)}")
-            self.logger.debug(f"batch_delete_memories response: {response}")
-            
-            # Handle different response formats
-            success = False
-            if isinstance(response, dict):
-                success = response.get("success", False)
-                error_msg = response.get("error", "Unknown error occurred")
-            elif isinstance(response, bool):
-                success = response
-                error_msg = "Unknown error occurred"
-            else:
-                return ToolResult.error(f"Unexpected response format: {type(response)}")
-            
-            if success:
-                identifier_info = []
-                if arguments.get("user_id"):
-                    identifier_info.append(f"user_id: {arguments['user_id']}")
-                if arguments.get("agent_id"):
-                    identifier_info.append(f"agent_id: {arguments['agent_id']}")
-                if arguments.get("run_id"):
-                    identifier_info.append(f"run_id: {arguments['run_id']}")
-                
+            if response.get("status") == "success":
                 return ToolResult.success(
-                    f"Successfully deleted all memories for {', '.join(identifier_info)}"
+                    "Memory retrieved successfully",
+                    structured_content=response
                 )
             else:
-                return ToolResult.error(f"Failed to batch delete memories: {error_msg}")
+                error_msg = response.get("message", "Unknown error occurred")
+                return ToolResult.error(f"Failed to get memory: {error_msg}")
                 
         except Exception as e:
-            self.logger.error(f"Error in batch_delete_memories: {str(e)}")
-            return ToolResult.error(str(e))
-    
-    def get_input_schema(self) -> Dict[str, Any]:
-        """Get input schema for batch_delete_memories"""
-        from ..protocol.message_types import BATCH_DELETE_MEMORIES_SCHEMA
-        return BATCH_DELETE_MEMORIES_SCHEMA
+            logger.error(f"Get_memory_by_id execution error: {e}")
+            return ToolResult.error(f"Memory retrieval failed: {str(e)}")
 
 
 class UpdateMemoryTool(BaseTool):
-    """Tool for updating existing memories"""
+    """Tool for updating memories"""
     
     def __init__(self, adapter: BaseAdapter):
         super().__init__(
             name="update_memory",
-            description="Update an existing memory by ID"
+            description="Update an existing memory"
         )
         self.adapter = adapter
+    
+    def get_input_schema(self) -> Dict[str, Any]:
+        """Define the input schema for update_memory tool"""
+        return {
+            "type": "object",
+            "required": ["memory_id", "text"],
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the memory to update"
+                },
+                "text": {
+                    "type": "string",
+                    "description": "New content for the memory"
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the user"
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Additional metadata for the memory"
+                }
+            }
+        }
     
     async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
         """Execute update_memory tool"""
         try:
-            await self.validate_arguments(arguments)
+            response = await self.adapter.update_memory(**arguments)
             
-            # Extract required parameters
-            memory_id = arguments["memory_id"]
-            data = arguments["data"]
-            
-            self.logger.debug(f"Updating memory {memory_id} with new data: {data[:100]}...")
-            
-            # Call Mem0 API
-            response = await self.adapter.update_memory(memory_id=memory_id, data=data)
-            
-            # Debug: Print response type and content
-            self.logger.debug(f"update_memory response type: {type(response)}")
-            self.logger.debug(f"update_memory response: {response}")
-            
-            # Handle different response formats
-            success = False
-            message = "Memory updated successfully"
-            
-            if isinstance(response, dict):
-                # Check for success indicators
-                success = (
-                    response.get("success", False) or
-                    "message" in response or
-                    "memory_id" in response or
-                    "updated" in str(response).lower()
+            if response.get("status") == "success":
+                return ToolResult.success(
+                    "Memory updated successfully",
+                    structured_content=response
                 )
-                
-                if response.get("message"):
-                    message = response["message"]
-                elif response.get("memory_id"):
-                    message = f"Memory {response['memory_id']} updated successfully"
-            elif isinstance(response, bool):
-                success = response
             else:
-                # If we get any response without error, consider it success
-                success = True
-            
-            if success:
-                return ToolResult.success(f"Successfully updated memory {memory_id}: {message}")
-            else:
-                error_msg = response.get("error", "Unknown error occurred") if isinstance(response, dict) else str(response)
-                return ToolResult.error(f"Failed to update memory {memory_id}: {error_msg}")
+                error_msg = response.get("message", "Unknown error occurred")
+                return ToolResult.error(f"Failed to update memory: {error_msg}")
                 
         except Exception as e:
-            self.logger.error(f"Error in update_memory: {str(e)}")
-            return ToolResult.error(str(e))
+            logger.error(f"Update_memory execution error: {e}")
+            return ToolResult.error(f"Memory update failed: {str(e)}")
+
+
+class DeleteMemoryTool(BaseTool):
+    """Tool for deleting memories"""
+    
+    def __init__(self, adapter: BaseAdapter):
+        super().__init__(
+            name="delete_memory",
+            description="Delete a specific memory"
+        )
+        self.adapter = adapter
     
     def get_input_schema(self) -> Dict[str, Any]:
-        """Get input schema for update_memory"""
-        from ..protocol.message_types import UPDATE_MEMORY_SCHEMA
-        return UPDATE_MEMORY_SCHEMA
+        """Define the input schema for delete_memory tool"""
+        return {
+            "type": "object",
+            "required": ["memory_id"],
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the memory to delete"
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Unique identifier for the user"
+                }
+            }
+        }
+    
+    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
+        """Execute delete_memory tool"""
+        try:
+            response = await self.adapter.delete_memory(**arguments)
+            
+            if response.get("status") == "success":
+                return ToolResult.success(
+                    "Memory deleted successfully",
+                    structured_content=response
+                )
+            else:
+                error_msg = response.get("message", "Unknown error occurred")
+                return ToolResult.error(f"Failed to delete memory: {error_msg}")
+                
+        except Exception as e:
+            logger.error(f"Delete_memory execution error: {e}")
+            return ToolResult.error(f"Memory deletion failed: {str(e)}")
+
+
+class ProjectConfigTool(BaseTool):
+    """Tool for managing project-level configurations"""
+
+    def __init__(self, adapter: BaseAdapter):
+        super().__init__(
+            name="project_config",
+            description="Manage project-level configurations including custom categories and custom instructions"
+        )
+        self.adapter = adapter
+
+    def get_input_schema(self) -> Dict[str, Any]:
+        """Define the input schema for project_config tool"""
+        return {
+            "type": "object",
+            "required": ["operation"],
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "Operation type",
+                    "enum": ["get", "update", "delete", "reset"]
+                },
+                "config_type": {
+                    "type": "string",
+                    "description": "Configuration type",
+                    "enum": ["custom_categories", "custom_instructions", "all"]
+                },
+                "custom_categories": {
+                    "type": "array",
+                    "description": "Custom categories list",
+                    "items": {
+                        "type": "object",
+                        "description": "Category with single key-value pair"
+                    }
+                },
+                "custom_instructions": {
+                    "type": "string",
+                    "description": "Custom instructions text"
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Project ID (optional)"
+                }
+            }
+        }
+
+    async def execute(self, arguments: Dict[str, Any]) -> ToolResult:
+        """Execute project_config operation"""
+        try:
+            from .services.project_config_service import get_config_manager
+
+            config_manager = get_config_manager()
+            operation = arguments.get("operation")
+
+            if operation == "get":
+                config_type = arguments.get("config_type")
+                result = config_manager.get_config(config_type)
+                return ToolResult.success(
+                    "Configuration retrieved successfully",
+                    structured_content={"status": "success", "data": result}
+                )
+
+            elif operation == "update":
+                if "custom_categories" in arguments:
+                    result = config_manager.update_custom_categories(arguments["custom_categories"])
+                elif "custom_instructions" in arguments:
+                    result = config_manager.update_custom_instructions(arguments["custom_instructions"])
+                else:
+                    return ToolResult.error("No configuration data provided for update")
+
+                return ToolResult.success(
+                    "Configuration updated successfully",
+                    structured_content={"status": "success", "data": result}
+                )
+
+            elif operation == "delete":
+                config_type = arguments.get("config_type")
+                if not config_type:
+                    return ToolResult.error("Config type is required for delete operation")
+
+                result = config_manager.delete_config(config_type)
+                return ToolResult.success(
+                    "Configuration deleted successfully",
+                    structured_content={"status": "success", "data": result}
+                )
+
+            elif operation == "reset":
+                result = config_manager.reset_config()
+                return ToolResult.success(
+                    "Configuration reset successfully",
+                    structured_content={"status": "success", "data": result}
+                )
+
+            else:
+                return ToolResult.error(f"Unsupported operation: {operation}")
+
+        except Exception as e:
+            logger.error(f"Project_config execution error: {e}")
+            return ToolResult.error(f"Project configuration operation failed: {str(e)}")
 
 
 class MemoryToolsExecutor:
-    """
-    Executor for memory-related MCP tools
-    """
+    """Legacy memory tools executor for backward compatibility"""
     
     def __init__(self, config: MCPConfig):
         self.config = config
-        self.client: Optional[Mem0HTTPClient] = None
-        self.adapter: Optional[BaseAdapter] = None
-        self.tools: Dict[str, BaseTool] = {}
+        self.handler = JSONRPCHandler()
         
-        logger.info(f"Initialized MemoryToolsExecutor for {config.mem0_base_url}/{config.mem0_api_version}")
+    async def initialize(self):
+        """Initialize the executor"""
+        logger.info("MemoryToolsExecutor initialized for backward compatibility")
     
-    async def initialize(self) -> None:
-        """Initialize HTTP client and tools"""
-        if self.client is None:
-            self.client = Mem0HTTPClient(self.config)
-            await self.client.connect()
-            
-            # Create appropriate adapter
-            if self.config.mem0_api_version == "v1":
-                self.adapter = V1Adapter(self.client)
-            elif self.config.mem0_api_version == "v2":
-                self.adapter = V2Adapter(self.client)
-            else:
-                raise ValueError(f"Unsupported API version: {self.config.mem0_api_version}")
-            
-            # Initialize tools
-            self.tools = {
-                "add_memory": AddMemoryTool(self.adapter),
-                "search_memories": SearchMemoriesTool(self.adapter),
-                "get_memories": GetMemoriesTool(self.adapter),
-                "get_memory_by_id": GetMemoryByIdTool(self.adapter),
-                "delete_memory": DeleteMemoryTool(self.adapter),
-                "update_memory": UpdateMemoryTool(self.adapter),
-                "batch_delete_memories": BatchDeleteMemoriesTool(self.adapter)
-            }
-            
-            logger.info(f"Initialized {len(self.tools)} memory tools")
-    
-    async def cleanup(self) -> None:
-        """Cleanup resources"""
-        if self.client:
-            await self.client.close()
-            self.client = None
-            self.adapter = None
-            self.tools.clear()
-            logger.info("Cleaned up MemoryToolsExecutor")
-    
-    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any], request_id: str) -> JSONRPCResponse:
-        """
-        Execute a tool and return JSON-RPC response
+    async def cleanup(self):
+        """Cleanup the executor"""
+        logger.info("MemoryToolsExecutor cleanup completed")
         
-        Args:
-            tool_name: Name of tool to execute
-            arguments: Tool arguments
-            request_id: Request ID for response
-            
-        Returns:
-            JSON-RPC response
-        """
-        try:
-            if tool_name not in self.tools:
-                return JSONRPCHandler.create_error_response(
-                    -32601,  # Method not found
-                    f"Tool '{tool_name}' not found",
-                    id=request_id
-                )
-            
-            tool = self.tools[tool_name]
-            
-            # Ensure initialized
-            await self.initialize()
-            
-            # Execute tool directly
-            result = await tool.execute(arguments)
-            
-            # Convert ToolResult to JSON-RPC response
-            response_content = ToolsCallResponse(
-                content=result.content,
-                isError=result.is_error
-            )
-            
-            return JSONRPCHandler.create_response(
-                result=response_content.to_dict(),
-                id=request_id
-            )
-            
-        except Exception as e:
-            logger.error(f"Error executing tool {tool_name}: {str(e)}")
-            return JSONRPCHandler.create_error_response(
-                -32603,  # Internal error
-                f"Error executing tool: {str(e)}",
-                id=request_id
-            )
+    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any], request_id: Optional[str] = None) -> JSONRPCResponse:
+        """Execute a memory tool (legacy interface)"""
+        logger.debug(f"Legacy tool execution: {tool_name} with request_id: {request_id}")
+
+        # This is a placeholder for legacy compatibility
+        # The actual tool execution should go through the new tool manager
+        from ..protocol.jsonrpc import JSONRPCHandler
+
+        # Return proper JSON-RPC response
+        result = ToolsCallResponse(
+            content=[{"type": "text", "text": f"Legacy tool {tool_name} called with arguments: {arguments}"}]
+        )
+
+        return JSONRPCHandler.create_response(
+            result=result.to_dict(),
+            id=request_id
+        )

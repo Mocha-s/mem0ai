@@ -5,7 +5,7 @@ icon: "bolt"
 iconType: "solid"
 ---
 
-<Snippet file="security-compliance.mdx" />
+<Snippet file="blank-notif.mdx" />
 The `AsyncMemoryClient` is an asynchronous client for interacting with the Mem0 API. It provides similar functionality to the synchronous `MemoryClient` but allows for non-blocking operations, which can be beneficial in applications that require high concurrency.
 
 ## Initialization
@@ -24,7 +24,7 @@ client = AsyncMemoryClient()
 ```
 
 ```javascript JavaScript
-import { MemoryClient } from 'mem0ai';
+const { MemoryClient } = require('mem0ai');
 const client = new MemoryClient({ apiKey: 'your-api-key'});
 ```
 

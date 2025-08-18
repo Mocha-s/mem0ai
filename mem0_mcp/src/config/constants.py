@@ -8,8 +8,9 @@ DEFAULT_PORT = 8001
 DEFAULT_MEM0_BASE_URL = "http://localhost:8000"
 DEFAULT_API_VERSION = "v1"
 # MCP Protocol versions (prioritized from newest to oldest)
-SUPPORTED_MCP_VERSIONS = ["2025-03-26", "2024-11-05", "2024-10-07"]
-MCP_VERSION = SUPPORTED_MCP_VERSIONS[0]  # Default to newest
+# Updated to support MCP 2025-06-18 specification
+SUPPORTED_MCP_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]
+MCP_VERSION = SUPPORTED_MCP_VERSIONS[0]  # Default to newest (2025-06-18)
 
 # Supported transport types
 SUPPORTED_TRANSPORTS = ["http", "stdio"]

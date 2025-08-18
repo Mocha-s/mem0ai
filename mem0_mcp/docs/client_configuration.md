@@ -30,14 +30,14 @@ The Mem0 MCP server now supports OpenMemory-style user identity management throu
 }
 ```
 
-### 2. OpenMemory-Style Endpoint with User Identity
+### 2. Simplified Context-Aware Endpoints
 
 ```json
 {
   "mcpServers": {
     "mem0-mcp-user": {
       "type": "streamable-http",
-      "url": "http://localhost:8001/{client_name}/mcp/{user_id}"
+      "url": "http://localhost:8001/mcp/user/{user_id}"
     }
   }
 }
@@ -61,7 +61,7 @@ The Mem0 MCP server now supports OpenMemory-style user identity management throu
   "mcpServers": {
     "mem0-mcp": {
       "type": "streamable-http",
-      "url": "http://localhost:8001/claude-code/mcp/user/user123"
+      "url": "http://localhost:8001/mcp/user/user123"
     }
   }
 }
@@ -72,8 +72,8 @@ The Mem0 MCP server now supports OpenMemory-style user identity management throu
 {
   "mcpServers": {
     "mem0-mcp": {
-      "type": "streamable-http", 
-      "url": "http://localhost:8001/my-agent/mcp/agent/agent456"
+      "type": "streamable-http",
+      "url": "http://localhost:8001/mcp/agent/agent456"
     }
   }
 }
@@ -85,7 +85,19 @@ The Mem0 MCP server now supports OpenMemory-style user identity management throu
   "mcpServers": {
     "mem0-mcp": {
       "type": "streamable-http",
-      "url": "http://localhost:8001/workflow/mcp/run/run789"
+      "url": "http://localhost:8001/mcp/run/run789"
+    }
+  }
+}
+```
+
+#### Default Identity Format
+```json
+{
+  "mcpServers": {
+    "mem0-mcp": {
+      "type": "streamable-http",
+      "url": "http://localhost:8001/mcp/user123"
     }
   }
 }
@@ -93,15 +105,14 @@ The Mem0 MCP server now supports OpenMemory-style user identity management throu
 
 ## URL Path Components
 
-### Format: `/{client_name}/mcp/{identity_type}/{identity_value}`
+### Format: `/mcp/{identity_type}/{identity_value}`
 
-- **client_name**: Application or client identifier (e.g., "claude-code", "my-agent", "workflow")
 - **identity_type**: One of "user", "agent", or "run" 
 - **identity_value**: The actual identifier value
 
-### Simplified Format: `/{client_name}/mcp/{identity_value}`
+### Simplified Format: `/mcp/{identity_value}`
 
-For backward compatibility with OpenMemory, this format treats the identity_value as user_id by default.
+For backward compatibility, this format treats the identity_value as user_id by default.
 
 ## Benefits
 
@@ -134,7 +145,7 @@ For backward compatibility with OpenMemory, this format treats the identity_valu
   "mcpServers": {
     "mem0-mcp": {
       "type": "streamable-http",
-      "url": "http://localhost:8001/claude-code/mcp/user/user123"
+      "url": "http://localhost:8001/mcp/user/user123"
     }
   }
 }
@@ -170,7 +181,7 @@ curl http://localhost:8001/health
 
 Test the MCP endpoint:
 ```bash
-curl -X POST http://localhost:8001/claude-code/mcp/user/test123 \
+curl -X POST http://localhost:8001/mcp/user/test123 \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}'
 ```

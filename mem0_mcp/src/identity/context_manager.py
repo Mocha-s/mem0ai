@@ -2,7 +2,7 @@
 Context-based identity management for MCP server.
 
 This module provides Context Variables based user identity management
-similar to OpenMemory's approach, allowing session-level identity binding
+with session-level identity binding and automatic context resolution
 without requiring explicit parameters in every tool call.
 """
 

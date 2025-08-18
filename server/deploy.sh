@@ -29,6 +29,35 @@ ENV_FILE="$SCRIPT_DIR/.env"
 # 工具函数
 # =============================================================================
 
+# 设置数据目录权限
+setup_permissions() {
+    echo -e "${CYAN}正在设置数据目录权限...${NC}"
+    
+    # 从环境变量或使用默认值获取数据路径
+    local data_path="${MEM0_DATA_PATH:-./data}"
+    
+    # 如果是相对路径，转换为绝对路径
+    if [[ ! "$data_path" = /* ]]; then
+        data_path="$SCRIPT_DIR/$data_path"
+    fi
+    
+    # 创建数据目录（如果不存在）
+    mkdir -p "$data_path"
+    
+    # 设置权限以匹配容器内的mem0用户 (UID:999, GID:999)
+    if command -v sudo >/dev/null 2>&1 && [[ $EUID -ne 0 ]]; then
+        sudo chown -R 999:999 "$data_path"
+        sudo chmod -R 755 "$data_path"
+        sudo find "$data_path" -type f -name "*.db" -exec chmod 664 {} \;
+    else
+        chown -R 999:999 "$data_path" 2>/dev/null || true
+        chmod -R 755 "$data_path" 2>/dev/null || true
+        find "$data_path" -type f -name "*.db" -exec chmod 664 {} \; 2>/dev/null || true
+    fi
+    
+    echo -e "${GREEN}数据目录权限设置完成${NC}"
+}
+
 print_header() {
     echo -e "${BLUE}"
     echo "============================================================================="
@@ -199,6 +228,9 @@ start_services() {
     print_step "启动 Mem0 服务..."
 
     cd "$SCRIPT_DIR"
+
+    # 设置数据目录权限
+    setup_permissions
 
     # 拉取最新镜像（除非跳过）
     if [ "$skip_pull" != "true" ]; then

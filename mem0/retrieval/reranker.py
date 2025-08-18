@@ -23,9 +23,23 @@ class LLMReranker(BaseReranker):
         """
         self.llm_config = llm_config
         try:
-            provider = llm_config.get('provider', 'openai')
-            # Remove provider from config before passing to LlmFactory
-            config_for_llm = {k: v for k, v in llm_config.items() if k != 'provider'}
+            # Handle both dict and config object types
+            if hasattr(llm_config, 'get'):
+                # It's a dictionary
+                provider = llm_config.get('provider', 'openai')
+                config_for_llm = {k: v for k, v in llm_config.items() if k != 'provider'}
+            elif hasattr(llm_config, '__dict__'):
+                # It's a config object, convert to dict
+                config_dict = llm_config.__dict__.copy()
+                provider = config_dict.get('provider', 'openai')
+                # Filter out incompatible parameters
+                allowed_params = {'model', 'api_key', 'temperature', 'max_tokens', 'top_p', 'frequency_penalty', 'presence_penalty'}
+                config_for_llm = {k: v for k, v in config_dict.items() if k != 'provider' and k in allowed_params}
+            else:
+                # Fallback: empty config
+                provider = 'openai'
+                config_for_llm = {}
+                
             self.llm = LlmFactory.create(provider, config_for_llm)
             logger.info(f"Initialized LLMReranker with provider: {provider}")
         except Exception as e:

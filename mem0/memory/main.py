@@ -148,20 +148,9 @@ class Memory(MemoryBase):
         self.collection_name = self.config.vector_store.config.collection_name
         self.api_version = self.config.version
 
-        self.enable_graph = False
+        # Graph store initialization is now handled dynamically per request
+        self.graph = None
 
-        if self.config.graph_store.config:
-            if self.config.graph_store.provider == "memgraph":
-                from mem0.memory.memgraph_memory import MemoryGraph
-            elif self.config.graph_store.provider == "neptune":
-                from mem0.graphs.neptune.main import MemoryGraph
-            else:
-                from mem0.memory.graph_memory import MemoryGraph
-
-            self.graph = MemoryGraph(self.config)
-            self.enable_graph = True
-        else:
-            self.graph = None
         self.config.vector_store.config.collection_name = "mem0migrations"
         if self.config.vector_store.provider in ["faiss", "qdrant"]:
             provider_path = f"migrations_{self.config.vector_store.provider}"
@@ -219,6 +208,7 @@ class Memory(MemoryBase):
         includes: Optional[str] = None,
         excludes: Optional[str] = None,
         timestamp: Optional[int] = None,
+        enable_graph: bool = False,
     ):
         """
         Create a new memory.
@@ -247,6 +237,9 @@ class Memory(MemoryBase):
                 information related to this topic will be extracted and stored. Defaults to None.
             excludes (str, optional): Exclude specific types of memories. When provided, information
                 related to this topic will be ignored during extraction. Defaults to None.
+            enable_graph (bool, optional): Enable graph-based relationship extraction and storage.
+                When True, entities and relationships from messages will be extracted and stored
+                in the graph store for relationship queries. Defaults to False.
 
         Returns:
             dict: A dictionary containing the result of the memory addition operation, typically
@@ -342,7 +335,7 @@ class Memory(MemoryBase):
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp)
-            future2 = executor.submit(self._add_to_graph, messages, effective_filters)
+            future2 = executor.submit(self._add_to_graph, messages, effective_filters, enable_graph)
 
             concurrent.futures.wait([future1, future2])
 
@@ -359,7 +352,8 @@ class Memory(MemoryBase):
             )
             return vector_store_result
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_result is not None:
             return {
                 "results": vector_store_result,
                 "relations": graph_result,
@@ -537,14 +531,28 @@ class Memory(MemoryBase):
         )
         return returned_memories
 
-    def _add_to_graph(self, messages, filters):
+    def _add_to_graph(self, messages, filters, enable_graph=False):
         added_entities = []
-        if self.enable_graph:
-            if filters.get("user_id") is None:
-                filters["user_id"] = "user"
+        # Check if graph functionality is requested and graph store is configured
+        if enable_graph and self.config.graph_store.config:
+            # Initialize graph store if not already done
+            if not hasattr(self, 'graph') or self.graph is None:
+                try:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize graph store: {e}")
+                    return added_entities
+            
+            try:
+                if filters.get("user_id") is None:
+                    filters["user_id"] = "user"
 
-            data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
-            added_entities = self.graph.add(data, filters)
+                data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
+                added_entities = self.graph.add(data, filters)
+            except Exception as e:
+                logger.warning(f"Graph add operation failed, continuing without graph: {e}")
+                # Return empty list but don't raise exception to allow memory addition to continue
 
         return added_entities
 
@@ -599,6 +607,7 @@ class Memory(MemoryBase):
         run_id: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         limit: int = 100,
+        enable_graph: bool = False,
     ):
         """
         List all memories.
@@ -611,6 +620,9 @@ class Memory(MemoryBase):
                 These are merged with the ID-based scoping filters. For example,
                 `filters={"actor_id": "some_user"}`.
             limit (int, optional): The maximum number of memories to return. Defaults to 100.
+            enable_graph (bool, optional): Include graph-based entity relationships in results.
+                When True, returns related entities and relationships from graph store.
+                Defaults to False.
 
         Returns:
             dict: A dictionary containing a list of memories under the "results" key,
@@ -634,7 +646,7 @@ class Memory(MemoryBase):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_memories = executor.submit(self._get_all_from_vector_store, effective_filters, limit)
             future_graph_entities = (
-                executor.submit(self.graph.get_all, effective_filters, limit) if self.enable_graph else None
+                executor.submit(self._get_all_from_graph_store, effective_filters, limit, enable_graph) if enable_graph else None
             )
 
             concurrent.futures.wait(
@@ -644,7 +656,8 @@ class Memory(MemoryBase):
             all_memories_result = future_memories.result()
             graph_entities_result = future_graph_entities.result() if future_graph_entities else None
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_entities_result is not None:
             return {"results": all_memories_result, "relations": graph_entities_result}
 
         if self.api_version == "v1.0":
@@ -658,6 +671,26 @@ class Memory(MemoryBase):
             return all_memories_result
         else:
             return {"results": all_memories_result}
+
+    def _get_all_from_graph_store(self, filters, limit, enable_graph=False):
+        """Get all entities from graph store if enabled."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return self.graph.get_all(filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph get_all failed: {e}")
+            return None
 
     def _get_all_from_vector_store(self, filters, limit):
         memories_result = self.vector_store.list(filters=filters, limit=limit)
@@ -712,6 +745,7 @@ class Memory(MemoryBase):
         rerank: bool = False,
         filter_memories: bool = False,
         retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
+        enable_graph: bool = False,
     ):
         """
         Searches for memories based on a query
@@ -726,6 +760,9 @@ class Memory(MemoryBase):
             keyword_search (bool, optional): Enable BM25 keyword search for enhanced recall. Defaults to False.
             rerank (bool, optional): Enable LLM-based reranking for improved relevance. Defaults to False.
             filter_memories (bool, optional): Enable intelligent memory filtering for higher precision. Defaults to False.
+            enable_graph (bool, optional): Enable graph-based relationship search for enhanced context.
+                When True, performs graph traversal to find related entities and relationships.
+                Defaults to False.
 
         Returns:
             dict: A dictionary containing the search results, typically under a "results" key,
@@ -759,7 +796,7 @@ class Memory(MemoryBase):
                 keyword_search, rerank, filter_memories, retrieval_criteria
             )
             future_graph_entities = (
-                executor.submit(self.graph.search, query, effective_filters, limit) if self.enable_graph else None
+                executor.submit(self._search_graph_store, query, effective_filters, limit, enable_graph) if enable_graph else None
             )
 
             concurrent.futures.wait(
@@ -769,7 +806,8 @@ class Memory(MemoryBase):
             original_memories = future_memories.result()
             graph_entities = future_graph_entities.result() if future_graph_entities else None
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_entities is not None:
             return {"results": original_memories, "relations": graph_entities}
 
         if self.api_version == "v1.0":
@@ -783,6 +821,26 @@ class Memory(MemoryBase):
             return {"results": original_memories}
         else:
             return {"results": original_memories}
+
+    def _search_graph_store(self, query, filters, limit, enable_graph=False):
+        """Search graph store for related entities and relationships."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return self.graph.search(query, filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph search failed: {e}")
+            return None
 
     def _search_vector_store(
         self,
@@ -894,7 +952,7 @@ class Memory(MemoryBase):
         self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
-    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
+    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None, enable_graph: bool = False):
         """
         Delete all memories.
 
@@ -924,8 +982,15 @@ class Memory(MemoryBase):
 
         logger.info(f"Deleted {len(memories)} memories")
 
-        if self.enable_graph:
-            self.graph.delete_all(filters)
+        if enable_graph and self.config.graph_store.config:
+            try:
+                # Initialize graph store if not already done
+                if not hasattr(self, 'graph') or self.graph is None:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                self.graph.delete_all(filters)
+            except Exception as e:
+                logger.warning(f"Graph delete_all operation failed: {e}")
 
         return {"message": "Memories deleted successfully!"}
 
@@ -1307,15 +1372,8 @@ class AsyncMemory(MemoryBase):
         self.collection_name = self.config.vector_store.config.collection_name
         self.api_version = self.config.version
 
-        self.enable_graph = False
-
-        if self.config.graph_store.config:
-            from mem0.memory.graph_memory import MemoryGraph
-
-            self.graph = MemoryGraph(self.config)
-            self.enable_graph = True
-        else:
-            self.graph = None
+        # Graph store initialization is now handled dynamically per request
+        self.graph = None
 
         # Initialize performance optimization features
         self._contextual_history_cache = {}  # Cache for historical messages
@@ -1366,6 +1424,7 @@ class AsyncMemory(MemoryBase):
         includes: Optional[str] = None,
         excludes: Optional[str] = None,
         timestamp: Optional[int] = None,
+        enable_graph: bool = False,
     ):
         """
         Create a new memory asynchronously.
@@ -1477,7 +1536,7 @@ class AsyncMemory(MemoryBase):
         vector_store_task = asyncio.create_task(
             self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp)
         )
-        graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters))
+        graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters, enable_graph))
 
         vector_store_result, graph_result = await asyncio.gather(vector_store_task, graph_task)
 
@@ -1491,7 +1550,8 @@ class AsyncMemory(MemoryBase):
             )
             return vector_store_result
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_result is not None:
             return {
                 "results": vector_store_result,
                 "relations": graph_result,
@@ -1685,14 +1745,28 @@ class AsyncMemory(MemoryBase):
         )
         return returned_memories
 
-    async def _add_to_graph(self, messages, filters):
+    async def _add_to_graph(self, messages, filters, enable_graph=False):
         added_entities = []
-        if self.enable_graph:
-            if filters.get("user_id") is None:
-                filters["user_id"] = "user"
+        # Check if graph functionality is requested and graph store is configured
+        if enable_graph and self.config.graph_store.config:
+            # Initialize graph store if not already done
+            if not hasattr(self, 'graph') or self.graph is None:
+                try:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize graph store: {e}")
+                    return added_entities
+            
+            try:
+                if filters.get("user_id") is None:
+                    filters["user_id"] = "user"
 
-            data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
-            added_entities = await asyncio.to_thread(self.graph.add, data, filters)
+                data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
+                added_entities = await asyncio.to_thread(self.graph.add, data, filters)
+            except Exception as e:
+                logger.warning(f"Graph add operation failed, continuing without graph: {e}")
+                # Return empty list but don't raise exception to allow memory addition to continue
 
         return added_entities
 
@@ -1747,6 +1821,7 @@ class AsyncMemory(MemoryBase):
         run_id: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         limit: int = 100,
+        enable_graph: bool = False,
     ):
         """
         List all memories.
@@ -1759,6 +1834,9 @@ class AsyncMemory(MemoryBase):
                  These are merged with the ID-based scoping filters. For example,
                  `filters={"actor_id": "some_user"}`.
              limit (int, optional): The maximum number of memories to return. Defaults to 100.
+             enable_graph (bool, optional): Include graph-based entity relationships in results.
+                When True, returns related entities and relationships from graph store.
+                Defaults to False.
 
          Returns:
              dict: A dictionary containing a list of memories under the "results" key,
@@ -1772,10 +1850,7 @@ class AsyncMemory(MemoryBase):
         )
 
         if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id")):
-            raise ValueError(
-                "When 'conversation_id' is not provided (classic mode), "
-                "at least one of 'user_id', 'agent_id', or 'run_id' must be specified for get_all."
-            )
+            raise ValueError("At least one of 'user_id', 'agent_id', or 'run_id' must be specified.")
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
         capture_event(
@@ -1785,7 +1860,7 @@ class AsyncMemory(MemoryBase):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_memories = executor.submit(self._get_all_from_vector_store, effective_filters, limit)
             future_graph_entities = (
-                executor.submit(self.graph.get_all, effective_filters, limit) if self.enable_graph else None
+                executor.submit(self._get_all_from_graph_store, effective_filters, limit, enable_graph) if enable_graph else None
             )
 
             concurrent.futures.wait(
@@ -1795,7 +1870,8 @@ class AsyncMemory(MemoryBase):
             all_memories_result = future_memories.result()
             graph_entities_result = future_graph_entities.result() if future_graph_entities else None
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_entities_result is not None:
             return {"results": all_memories_result, "relations": graph_entities_result}
 
         if self.api_version == "v1.0":
@@ -1849,6 +1925,26 @@ class AsyncMemory(MemoryBase):
 
         return formatted_memories
 
+    async def _get_all_from_graph_store(self, filters, limit, enable_graph=False):
+        """Get all entities from graph store if enabled."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return await asyncio.to_thread(self.graph.get_all, filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph get_all failed: {e}")
+            return None
+
     async def search(
         self,
         query: str,
@@ -1863,6 +1959,7 @@ class AsyncMemory(MemoryBase):
         rerank: bool = False,
         filter_memories: bool = False,
         retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
+        enable_graph: bool = False,
     ):
         """
         Searches for memories based on a query
@@ -1877,6 +1974,9 @@ class AsyncMemory(MemoryBase):
             keyword_search (bool, optional): Enable BM25 keyword search for enhanced recall. Defaults to False.
             rerank (bool, optional): Enable LLM-based reranking for improved relevance. Defaults to False.
             filter_memories (bool, optional): Enable intelligent memory filtering for higher precision. Defaults to False.
+            enable_graph (bool, optional): Enable graph-based relationship search for enhanced context.
+                When True, performs graph traversal to find related entities and relationships.
+                Defaults to False.
 
         Returns:
             dict: A dictionary containing the search results, typically under a "results" key,
@@ -1910,11 +2010,8 @@ class AsyncMemory(MemoryBase):
         )
 
         graph_task = None
-        if self.enable_graph:
-            if hasattr(self.graph.search, "__await__"):  # Check if graph search is async
-                graph_task = asyncio.create_task(self.graph.search(query, effective_filters, limit))
-            else:
-                graph_task = asyncio.create_task(asyncio.to_thread(self.graph.search, query, effective_filters, limit))
+        if enable_graph:
+            graph_task = asyncio.create_task(self._search_graph_store(query, effective_filters, limit, enable_graph))
 
         if graph_task:
             original_memories, graph_entities = await asyncio.gather(vector_store_task, graph_task)
@@ -1922,7 +2019,8 @@ class AsyncMemory(MemoryBase):
             original_memories = await vector_store_task
             graph_entities = None
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_entities is not None:
             return {"results": original_memories, "relations": graph_entities}
 
         if self.api_version == "v1.0":
@@ -2013,6 +2111,26 @@ class AsyncMemory(MemoryBase):
 
         return original_memories
 
+    async def _search_graph_store(self, query, filters, limit, enable_graph=False):
+        """Search graph store for related entities and relationships."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return await asyncio.to_thread(self.graph.search, query, filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph search failed: {e}")
+            return None
+
     async def update(self, memory_id, data, metadata=None):
         """
         Update a memory by ID asynchronously.
@@ -2044,7 +2162,7 @@ class AsyncMemory(MemoryBase):
         await self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
-    async def delete_all(self, user_id=None, agent_id=None, run_id=None):
+    async def delete_all(self, user_id=None, agent_id=None, run_id=None, enable_graph: bool = False):
         """
         Delete all memories asynchronously.
 
@@ -2078,8 +2196,15 @@ class AsyncMemory(MemoryBase):
 
         logger.info(f"Deleted {len(memories[0])} memories")
 
-        if self.enable_graph:
-            await asyncio.to_thread(self.graph.delete_all, filters)
+        if enable_graph and self.config.graph_store.config:
+            try:
+                # Initialize graph store if not already done
+                if not hasattr(self, 'graph') or self.graph is None:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                await asyncio.to_thread(self.graph.delete_all, filters)
+            except Exception as e:
+                logger.warning(f"Graph delete_all operation failed: {e}")
 
         return {"message": "Memories deleted successfully!"}
 

@@ -6,17 +6,16 @@
 
 ## English
 
-A production-ready Model Context Protocol (MCP) server implementation for Mem0, providing secure, scalable access to Mem0 memory services through the standardized MCP protocol with OpenMemory-style identity management.
+A production-ready Model Context Protocol (MCP) server implementation for Mem0, providing secure, scalable access to Mem0 memory services through the standardized MCP protocol with context-aware identity management.
 
 ### 🚀 Key Features
 
-- **✅ Full MCP Protocol Compliance** - Supports MCP versions 2025-03-26, 2024-11-05, and 2024-10-07
-- **🔧 OpenMemory-Style Identity Management** - Context Variables architecture with multiple endpoint formats
-- **🌐 Multiple Transport Options** - HTTP, Server-Sent Events (SSE), and streamable-http support
-- **🔌 Dual API Version Support** - Compatible with both Mem0 V1 and V2 APIs
-- **⚡ High-Performance Async Architecture** - Built with FastAPI and asyncio for maximum throughput
-- **🛡️ Production-Ready** - Comprehensive error handling, logging, and monitoring
-- **🔄 Backward Compatibility** - Supports both explicit and Context Variables-based identity management
+- **✨ Service-Oriented Architecture (v2)** - Tools are implemented as independent, dynamically loaded services.
+- **🔧 Dynamic Tool Registry** - Tools are registered via a `tools.json` file, allowing for easy extension without code changes.
+- **⚡ High-Performance Async Architecture** - Built with FastAPI and asyncio for maximum throughput.
+- **🔌 Dual API Version Support** - Compatible with both Mem0 V1 and V2 APIs.
+- **🛡️ Production-Ready** - Comprehensive error handling, logging, and monitoring.
+- **🔄 Backward Compatibility** - Core client-facing APIs remain backward compatible.
 
 ### 📋 Available MCP Tools
 
@@ -29,20 +28,18 @@ A production-ready Model Context Protocol (MCP) server implementation for Mem0, 
 | `delete_memory` | Delete a specific memory by its ID | ✅ Fully functional |
 | `batch_delete_memories` | Batch delete multiple memories by IDs | ✅ Fully functional |
 
-### 🏗️ Architecture
+### 🏗️ Architecture (v2)
 
+```mermaid
+graph TD
+    A[MCP Client] --> B[MCP Server (API Gateway)];
+    B --> C{ToolManager};
+    C -- Reads --> D[tools.json Registry];
+    C -- Routes to --> E[Tool Services];
+    E -- (e.g., add_memory) --> F[Mem0 Service];
 ```
-┌─────────────────┐    ┌──────────────────────┐    ┌─────────────────┐
-│   MCP Client    │───▶│     MCP Server       │───▶│   Mem0 Service  │
-│  (Claude, etc.) │    │  Context Variables   │    │   (Platform)    │
-└─────────────────┘    │  Identity Manager    │    └─────────────────┘
-                       └──────────────────────┘
-                              │
-                       ┌──────────────────────┐
-                       │    Transport Layer   │
-                       │  HTTP │ SSE │ Stream │
-                       └──────────────────────┘
-```
+
+The v2 architecture treats the MCP server as an API Gateway. The `ToolManager` dynamically loads tools defined in `tools.json` and routes incoming requests to the appropriate backend tool service. This service-oriented design allows for greater flexibility, scalability, and easier maintenance.
 
 ### 🚀 Quick Start
 
@@ -61,8 +58,10 @@ pip install -r requirements.txt
 ```
 
 2. **Configuration**
-```bash
-# Environment variables
+
+Create a `tools.json` file in the root directory (or use the default). This file defines the tools that the server will load. See `docs/tool_development_guide.md` for more details.
+
+Set the following environment variables:
 export MEM0_BASE_URL="https://api.mem0.ai"  # Mem0 service URL
 export MEM0_API_VERSION="v1"                # v1 or v2
 export MEM0_API_KEY="your-api-key"          # Your Mem0 API key
@@ -76,11 +75,11 @@ export MCP_DEBUG="true"                     # Enable debug mode
 python run_server.py
 ```
 
-The server will start on `http://localhost:8001` with both standard and OpenMemory-style endpoints available.
+The server will start on `http://localhost:8001` with both standard and Context-aware endpoints available.
 
 ### 🔧 Identity Management
 
-#### OpenMemory-Style Endpoints (Recommended)
+#### Context-Aware Endpoints (Recommended)
 ```
 # User-specific endpoint
 POST /{client_name}/mcp/{user_id}
@@ -99,7 +98,7 @@ POST /mcp
 
 ### 📡 Client Configuration Examples
 
-#### Claude Desktop (OpenMemory Style)
+#### Claude Desktop (Context-Aware Style)
 ```json
 {
   "mcpServers": {
@@ -239,7 +238,7 @@ docker run -p 8001:8001 -e MEM0_API_KEY=your-key mem0-mcp
    - Supports 2025-03-26, 2024-11-05, 2024-10-07
 
 2. **Identity Context Issues**
-   - Use OpenMemory-style endpoints for automatic context
+   - Use Context-aware endpoints for automatic context
    - Check user_id format in URL path
 
 3. **API Communication Errors**
@@ -248,25 +247,25 @@ docker run -p 8001:8001 -e MEM0_API_KEY=your-key mem0-mcp
 
 ### 📖 Documentation
 
+- [V2 Architecture Overview](docs/v2_architecture.md)
+- [Tool Development Guide](docs/tool_development_guide.md)
 - [Client Configuration Guide](docs/client_configuration.md)
 - [API Reference](docs/api_reference.md)
-- [Development Guide](docs/development.md)
 
 ---
 
 ## Chinese
 
-面向 Mem0 的生产就绪 Model Context Protocol (MCP) 服务器实现，通过标准化 MCP 协议和 OpenMemory 风格的身份管理，提供安全、可扩展的 Mem0 内存服务访问。
+面向 Mem0 的生产就绪 Model Context Protocol (MCP) 服务器实现，通过标准化 MCP 协议和上下文感知的身份管理，提供安全、可扩展的 Mem0 内存服务访问。
 
 ### 🚀 核心特性
 
-- **✅ 完整的 MCP 协议合规性** - 支持 MCP 版本 2025-03-26、2024-11-05 和 2024-10-07
-- **🔧 OpenMemory 风格身份管理** - Context Variables 架构，支持多种端点格式
-- **🌐 多种传输选项** - 支持 HTTP、Server-Sent Events (SSE) 和 streamable-http
-- **🔌 双 API 版本支持** - 兼容 Mem0 V1 和 V2 API
-- **⚡ 高性能异步架构** - 基于 FastAPI 和 asyncio 构建，实现最大吞吐量
-- **🛡️ 生产就绪** - 全面的错误处理、日志记录和监控
-- **🔄 向后兼容** - 同时支持显式和基于 Context Variables 的身份管理
+- **✨ 服务化架构 (v2)** - 工具被实现为独立的、动态加载的服务。
+- **🔧 动态工具注册表** - 通过 `tools.json` 文件注册工具，无需修改代码即可轻松扩展。
+- **⚡ 高性能异步架构** - 基于 FastAPI 和 asyncio 构建，实现最大吞吐量。
+- **🔌 双 API 版本支持** - 兼容 Mem0 V1 和 V2 API。
+- **🛡️ 生产就绪** - 全面的错误处理、日志记录和监控。
+- **🔄 向后兼容** - 核心面向客户端的 API 保持向后兼容。
 
 ### 📋 可用的 MCP 工具
 
@@ -279,20 +278,18 @@ docker run -p 8001:8001 -e MEM0_API_KEY=your-key mem0-mcp
 | `delete_memory` | 通过 ID 删除特定记忆 | ✅ 完全功能 |
 | `batch_delete_memories` | 通过 ID 批量删除多个记忆 | ✅ 完全功能 |
 
-### 🏗️ 系统架构
+### 🏗️ 系统架构 (v2)
 
+```mermaid
+graph TD
+    A[MCP 客户端] --> B[MCP 服务器 (API 网关)];
+    B --> C{ToolManager};
+    C -- 读取 --> D[tools.json 注册表];
+    C -- 路由至 --> E[工具服务];
+    E -- (例如, add_memory) --> F[Mem0 服务];
 ```
-┌─────────────────┐    ┌──────────────────────┐    ┌─────────────────┐
-│   MCP 客户端    │───▶│     MCP 服务器       │───▶│   Mem0 服务     │
-│  (Claude 等)    │    │  Context Variables   │    │   (平台)        │
-└─────────────────┘    │  身份管理器          │    └─────────────────┘
-                       └──────────────────────┘
-                              │
-                       ┌──────────────────────┐
-                       │     传输层           │
-                       │  HTTP │ SSE │ Stream │
-                       └──────────────────────┘
-```
+
+v2 架构将 MCP 服务器视为一个 API 网关。`ToolManager` 动态加载在 `tools.json` 中定义的工具，并将传入的请求路由到相应的后端工具服务。这种面向服务的设计带来了更大的灵活性、可扩展性和更简便的维护性。
 
 ### 🚀 快速开始
 
@@ -326,11 +323,11 @@ export MCP_DEBUG="true"                     # 启用调试模式
 python run_server.py
 ```
 
-服务器将在 `http://localhost:8001` 启动，同时提供标准和 OpenMemory 风格的端点。
+服务器将在 `http://localhost:8001` 启动，同时提供标准和上下文感知的端点。
 
 ### 🔧 身份管理
 
-#### OpenMemory 风格端点（推荐）
+#### 上下文感知端点（推荐）
 ```
 # 用户特定端点
 POST /{client_name}/mcp/{user_id}
@@ -349,7 +346,7 @@ POST /mcp
 
 ### 📡 客户端配置示例
 
-#### Claude Desktop（OpenMemory 风格）
+#### Claude Desktop（上下文感知风格）
 ```json
 {
   "mcpServers": {
@@ -489,7 +486,7 @@ docker run -p 8001:8001 -e MEM0_API_KEY=your-key mem0-mcp
    - 支持 2025-03-26、2024-11-05、2024-10-07
 
 2. **身份上下文问题**
-   - 使用 OpenMemory 风格端点实现自动上下文
+   - 使用上下文感知端点实现自动上下文
    - 检查 URL 路径中的 user_id 格式
 
 3. **API 通信错误**
@@ -498,9 +495,10 @@ docker run -p 8001:8001 -e MEM0_API_KEY=your-key mem0-mcp
 
 ### 📖 文档
 
+- [V2 架构概览](docs/v2_architecture.md)
+- [工具开发指南](docs/tool_development_guide.md)
 - [客户端配置指南](docs/client_configuration.md)
 - [API 参考](docs/api_reference.md)
-- [开发指南](docs/development.md)
 
 ### 📝 许可证
 
@@ -517,7 +515,7 @@ docker run -p 8001:8001 -e MEM0_API_KEY=your-key mem0-mcp
 ## Development Status | 开发状态
 
 - ✅ **Core MCP Protocol** - Fully implemented and tested
-- ✅ **OpenMemory Identity Management** - Production ready
+- ✅ **上下文感知身份管理** - Production ready
 - ✅ **All Memory Tools** - Complete and functional
 - ✅ **Multi-version API Support** - V1 and V2 compatible
 - ✅ **Error Handling** - Comprehensive error management

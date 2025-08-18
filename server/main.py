@@ -95,12 +95,13 @@ DEFAULT_CONFIG = {
     "history_db_path": HISTORY_DB_PATH,
 }
 
-# Add graph_store configuration if NEO4J_URI or NEO4J_URL is explicitly set
-if NEO4J_URI and NEO4J_URI != "bolt://neo4j:7687" or os.environ.get("NEO4J_URI") or os.environ.get("NEO4J_URL"):
+# Add graph_store configuration if Neo4j is available
+# Graph functionality will be controlled dynamically via API parameters
+if NEO4J_URI or os.environ.get("NEO4J_URL"):
     DEFAULT_CONFIG["graph_store"] = {
         "provider": "neo4j",
         "config": {
-            "url": NEO4J_URI,
+            "url": NEO4J_URI or os.environ.get("NEO4J_URL"),
             "username": NEO4J_USERNAME,
             "password": NEO4J_PASSWORD
         }
@@ -194,17 +195,17 @@ def clear_graph_memory_cache():
 def get_memory_instance_for_request(enable_graph: bool):
     """
     Get the appropriate Memory instance for a request.
+    
+    Since graph functionality is now handled dynamically per request,
+    we always return the main MEMORY_INSTANCE.
 
     Args:
-        enable_graph (bool): Whether graph memory is requested
+        enable_graph (bool): Whether graph memory is requested (passed through to methods)
 
     Returns:
-        Memory: Either the main MEMORY_INSTANCE or a cached graph-enabled instance
+        Memory: The main MEMORY_INSTANCE which supports dynamic graph control
     """
-    if enable_graph and not MEMORY_INSTANCE.enable_graph:
-        return get_graph_enabled_memory()
-    else:
-        return MEMORY_INSTANCE
+    return MEMORY_INSTANCE
 
 app = FastAPI(
     title="Mem0 REST APIs",
@@ -382,6 +383,16 @@ class V2SearchRequest(BaseModel):
     keyword_search: Optional[bool] = Field(False, description="Enable BM25 keyword search")
     rerank: Optional[bool] = Field(False, description="Enable LLM-based reranking")
     filter_memories: Optional[bool] = Field(False, description="Enable intelligent memory filtering")
+    enable_graph: Optional[bool] = Field(False, description="Enable graph memory search for relationship-based results")
+    output_format: Optional[str] = Field(None, description="Output format version (v1.1 for graph relations)")
+
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, v):
+        """Validate output_format parameter."""
+        if v is not None and v not in ["v1.1"]:
+            raise ValueError("Invalid output_format. Supported formats: v1.1")
+        return v
 
 
 @app.post("/configure", summary="Configure Mem0")
@@ -471,29 +482,30 @@ def add_memory(memory_create: MemoryCreate):
                 memory_instance.custom_fact_extraction_prompt = memory_create.custom_instructions
 
                 # Add memories with custom instructions
-                response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+                response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], enable_graph=enable_graph, **params)
 
             finally:
                 # Always restore original instructions
                 memory_instance.custom_fact_extraction_prompt = original_instructions
         else:
             # Normal processing without custom instructions
-            response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], **params)
+            response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], enable_graph=enable_graph, **params)
 
         # Process response based on output_format and enable_graph
-        if output_format == "v1.1" and enable_graph:
-            # Return full response with relations if available
+        if output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
             if isinstance(response, dict) and "relations" in response:
                 return JSONResponse(content=response)
             else:
                 # If no relations in response, add empty relations field
-                if isinstance(response, dict):
+                if isinstance(response, dict) and "results" in response:
                     response["relations"] = []
+                    return JSONResponse(content=response)
                 else:
                     response = {"results": response, "relations": []}
-                return JSONResponse(content=response)
+                    return JSONResponse(content=response)
         else:
-            # Return standard response format
+            # Return standard response format for backwards compatibility
             if isinstance(response, dict) and "results" in response:
                 return JSONResponse(content=response["results"])
             else:
@@ -530,22 +542,23 @@ def get_all_memories(
         memory_instance = get_memory_instance_for_request(enable_graph)
 
         # Get all memories
-        response = memory_instance.get_all(**params)
+        response = memory_instance.get_all(enable_graph=enable_graph, **params)
 
         # Process response based on output_format and enable_graph
-        if output_format == "v1.1" and enable_graph:
-            # Return full response with relations if available
+        if output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
             if isinstance(response, dict) and "relations" in response:
                 return JSONResponse(content=response)
             else:
                 # If no relations in response, add empty relations field
-                if isinstance(response, dict):
+                if isinstance(response, dict) and "results" in response:
                     response["relations"] = []
+                    return JSONResponse(content=response)
                 else:
                     response = {"results": response, "relations": []}
-                return JSONResponse(content=response)
+                    return JSONResponse(content=response)
         else:
-            # Return standard response format
+            # Return standard response format for backwards compatibility
             if isinstance(response, dict) and "results" in response:
                 return JSONResponse(content=response["results"])
             else:
@@ -584,22 +597,23 @@ def search_memories(search_req: SearchRequest):
         memory_instance = get_memory_instance_for_request(enable_graph)
 
         # Perform search
-        response = memory_instance.search(query=search_req.query, **params)
+        response = memory_instance.search(query=search_req.query, enable_graph=enable_graph, **params)
 
         # Process response based on output_format and enable_graph
-        if output_format == "v1.1" and enable_graph:
-            # Return full response with relations if available
+        if output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
             if isinstance(response, dict) and "relations" in response:
                 return JSONResponse(content=response)
             else:
                 # If no relations in response, add empty relations field
-                if isinstance(response, dict):
+                if isinstance(response, dict) and "results" in response:
                     response["relations"] = []
+                    return JSONResponse(content=response)
                 else:
                     response = {"results": response, "relations": []}
-                return JSONResponse(content=response)
+                    return JSONResponse(content=response)
         else:
-            # Return standard response format
+            # Return standard response format for backwards compatibility
             if isinstance(response, dict) and "results" in response:
                 return JSONResponse(content=response["results"])
             else:
@@ -1012,6 +1026,13 @@ def search_memories_v2(request: V2SearchRequest):
         if request.filter_memories is not None:
             search_params["filter_memories"] = request.filter_memories
 
+        # Add graph memory parameter if specified
+        if hasattr(request, 'enable_graph') and request.enable_graph is not None:
+            search_params["enable_graph"] = request.enable_graph
+
+        # Remove output_format from search_params as it's not a valid parameter for Memory.search()
+        search_params.pop("output_format", None)
+
         # Search memories using all parameters
         search_results = MEMORY_INSTANCE.search(query=request.query, **search_params)
 
@@ -1019,8 +1040,24 @@ def search_memories_v2(request: V2SearchRequest):
         if request.limit and isinstance(search_results, list):
             search_results = search_results[:request.limit]
 
+        # Process response based on output_format and enable_graph for V2 API compatibility
+        if hasattr(request, 'output_format') and request.output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
+            if isinstance(search_results, dict) and "relations" in search_results:
+                final_response = search_results
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(search_results, dict) and "results" in search_results:
+                    search_results["relations"] = []
+                    final_response = search_results
+                else:
+                    final_response = {"results": search_results, "relations": []}
+        else:
+            # Return standard response format
+            final_response = search_results
+
         return {
-            "results": search_results,
+            "results": final_response,
             "total_count": len(search_results) if isinstance(search_results, list) else 1,
             "query": request.query,
             "limit": request.limit,

@@ -9,9 +9,9 @@ Mem0 is an intelligent memory layer for AI assistants and agents that enables pe
 - `mem0/` - Core Python library providing the memory layer functionality
 - `embedchain/` - Legacy RAG framework (maintained for compatibility)
 - `server/` - FastAPI REST API server for standalone deployment
-- `openmemory/` - Full-stack web UI and API for memory management
-- `vercel-ai-sdk/` - TypeScript provider for Vercel AI SDK integration
+- `mem0_mcp/` - Model Context Protocol (MCP) server for integration with AI tools
 - `mem0-ts/` - TypeScript client library
+- `vercel-ai-sdk/` - TypeScript provider for Vercel AI SDK integration
 - `examples/` - Example applications and integrations
 - `evaluation/` - Evaluation framework and benchmarks
 
@@ -22,7 +22,7 @@ Mem0 is an intelligent memory layer for AI assistants and agents that enables pe
 # Install development dependencies
 hatch env create
 
-# Install all optional dependencies
+# Install all optional dependencies  
 make install_all
 
 # Format code
@@ -31,8 +31,17 @@ make format
 # Lint code  
 make lint
 
-# Run tests
+# Run tests (all environments)
 make test
+
+# Run tests for specific Python version
+make test-py-3.9
+make test-py-3.10  
+make test-py-3.11
+
+# Run single test file
+hatch run pytest tests/test_main.py
+hatch run pytest tests/memory/test_neptune_memory.py -v
 
 # Build package
 make build
@@ -62,15 +71,10 @@ cd server
 pip install -r requirements.txt
 python main.py
 
-# OpenMemory UI
-cd openmemory/ui
-pnpm install
-pnpm dev
-
-# OpenMemory API
-cd openmemory/api
+# MCP Server
+cd mem0_mcp
 pip install -r requirements.txt
-python main.py
+python run_server.py
 ```
 
 ## Core Architecture
@@ -162,14 +166,41 @@ results = memory.search(query="preferences", user_id="user123", filters={"topic"
 ### TypeScript/JavaScript
 - Client library in `mem0-ts/` for Node.js applications  
 - Vercel AI SDK provider in `vercel-ai-sdk/` for AI applications
-- React components and hooks in example applications
 
 ### REST API
 - FastAPI server providing HTTP endpoints
 - OpenAPI specification for API documentation
 - Docker containerization support
 
-### Platform Integration
-- Hosted platform client in `mem0/client/`
-- Self-hosted deployment options
-- MCP (Model Context Protocol) server support in `openmemory/`
+### MCP Integration
+- Model Context Protocol server in `mem0_mcp/`
+- Context-aware identity management
+- Service-oriented architecture with dynamic tool loading
+
+## Key Components to Understand
+
+### Main Memory Interface
+The core `Memory` and `AsyncMemory` classes in `mem0/memory/main.py` provide the primary interface for all memory operations. Key methods include:
+- `add()`: Create new memories from messages
+- `search()`: Search for relevant memories
+- `get()`: Retrieve specific memories by ID
+- `get_all()`: List all memories with filters
+- `update()`: Update existing memories
+- `delete()`: Delete memories by ID
+- `delete_all()`: Delete memories with filters
+- `reset()`: Reset the entire memory store
+
+### Configuration System
+The configuration system uses Pydantic models and factory patterns to dynamically instantiate components. The main config classes are in `mem0/configs/base.py` and component-specific configs are in their respective directories.
+
+### Factory Pattern
+Component instantiation uses factory classes in `mem0/utils/factory.py` to dynamically create LLMs, embedders, and vector stores based on configuration.
+
+### Graph Memory Support
+Graph memory functionality is implemented in `mem0/memory/graph_memory.py` and provides relationship-based memory storage and retrieval.
+
+### API Server
+The FastAPI server in `server/main.py` provides REST endpoints for all memory operations and supports both sync and async operations.
+
+### MCP Server
+The MCP server in `mem0_mcp/src/server.py` implements the Model Context Protocol for integration with AI development tools like Claude Desktop.

@@ -7,18 +7,23 @@
     },
     "mem0-mcp-with-user": {
       "type": "streamable-http", 
-      "url": "http://localhost:8001/claude-code/mcp/user123",
-      "description": "OpenMemory-style endpoint with user identity in URL path"
+      "url": "http://localhost:8001/mcp/user/user123",
+      "description": "Simplified context-aware endpoint with user identity in URL path"
     },
     "mem0-mcp-with-agent": {
       "type": "streamable-http",
-      "url": "http://localhost:8001/my-agent/mcp/agent/agent456", 
+      "url": "http://localhost:8001/mcp/agent/agent456", 
       "description": "Agent-specific endpoint format"
     },
     "mem0-mcp-with-run": {
       "type": "streamable-http",
-      "url": "http://localhost:8001/workflow/mcp/run/run789",
+      "url": "http://localhost:8001/mcp/run/run789",
       "description": "Run-specific endpoint format"
+    },
+    "mem0-mcp-default": {
+      "type": "streamable-http",
+      "url": "http://localhost:8001/mcp/user123",
+      "description": "Default identity endpoint (treated as user_id)"
     }
   }
 }

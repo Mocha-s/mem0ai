@@ -70,7 +70,13 @@ class Mem0HTTPClient:
         """Build full URL for API endpoint"""
         # Remove leading slash from endpoint if present
         endpoint = endpoint.lstrip('/')
-        return f"{self.base_url}/{self.api_version}/{endpoint}"
+        
+        # Handle v2 endpoints explicitly (they already include version in path)
+        if endpoint.startswith('v2/'):
+            return f"{self.base_url}/{endpoint}"
+        else:
+            # Use configured API version for v1 endpoints
+            return f"{self.base_url}/{self.api_version}/{endpoint}"
     
     async def _make_request(
         self,
@@ -174,9 +180,9 @@ class Mem0HTTPClient:
         """Make GET request"""
         return await self._make_request("GET", endpoint, params=params)
     
-    async def post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def post(self, endpoint: str, data: Dict[str, Any], params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Make POST request"""
-        return await self._make_request("POST", endpoint, data=data)
+        return await self._make_request("POST", endpoint, data=data, params=params)
     
     async def put(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Make PUT request"""
@@ -199,3 +205,143 @@ class Mem0HTTPClient:
         except Exception as e:
             logger.warning(f"Health check failed: {str(e)}")
             return False
+
+    # --- Domain-specific convenience methods ---
+    async def add_memory(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """
+        Add memories (v1). Maps to POST /v1/memories/
+        """
+        payload: Dict[str, Any] = {"messages": messages}
+        passthrough_keys = [
+            "user_id", "agent_id", "run_id", "metadata",
+            "custom_categories", "custom_instructions", "version",
+            "includes", "excludes", "timestamp", "enable_graph", "output_format"
+        ]
+        for key in passthrough_keys:
+            if key in kwargs and kwargs[key] is not None:
+                payload[key] = kwargs[key]
+        return await self.post("memories/", data=payload)
+
+    async def add_memory_v2(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """
+        Contextual add (v2 semantics). Server uses version="v2" on the same endpoint.
+        """
+        kwargs = {**kwargs, "version": "v2"}
+        return await self.add_memory(messages, **kwargs)
+
+    async def search_memories(self, query: str, **kwargs) -> Dict[str, Any]:
+        """
+        Search memories (v1). Maps to POST /v1/memories/search/
+        """
+        payload: Dict[str, Any] = {"query": query}
+        passthrough_keys = [
+            "user_id", "agent_id", "run_id", "filters",
+            "keyword_search", "rerank", "filter_memories",
+            "enable_graph", "output_format", "limit"
+        ]
+        for key in passthrough_keys:
+            if key in kwargs and kwargs[key] is not None:
+                payload[key] = kwargs[key]
+        return await self.post("memories/search/", data=payload)
+
+    async def search_memories_v2(self, query: str, **kwargs) -> Dict[str, Any]:
+        """
+        Search memories (v2). Maps to POST /v2/memories/search/
+        """
+        filters: Dict[str, Any] = dict(kwargs.get("filters") or {})
+        for id_key in ("user_id", "agent_id", "run_id"):
+            if id_key in kwargs and kwargs[id_key] is not None:
+                filters[id_key] = kwargs[id_key]
+        payload: Dict[str, Any] = {
+            "query": query,
+            "filters": filters or None,
+            "limit": kwargs.get("limit") or 50,
+            "keyword_search": kwargs.get("keyword_search"),
+            "rerank": kwargs.get("rerank"),
+            "filter_memories": kwargs.get("filter_memories"),
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+        return await self.post("v2/memories/search/", data=payload)
+
+    async def get_memories(self, **kwargs) -> Dict[str, Any]:
+        """
+        Get memories (v1). Maps to GET /v1/memories/
+        """
+        params: Dict[str, Any] = {}
+        for key in ("user_id", "agent_id", "run_id", "limit", "enable_graph", "output_format"):
+            if key in kwargs and kwargs[key] is not None:
+                params[key] = kwargs[key]
+        return await self.get("memories/", params=params)
+
+    async def get_memories_v2(self, **kwargs) -> Dict[str, Any]:
+        """
+        Get memories (v2). Maps to POST /v2/memories/
+        """
+        filters: Dict[str, Any] = dict(kwargs.get("filters") or {})
+        for id_key in ("user_id", "agent_id", "run_id"):
+            if id_key in kwargs and kwargs[id_key] is not None:
+                filters[id_key] = kwargs[id_key]
+        payload: Dict[str, Any] = {
+            "filters": filters or None,
+            "limit": kwargs.get("limit") or 50,
+        }
+        return await self.post("v2/memories/", data=payload)
+
+    async def update_memory(self, memory_id: str, text: str, **kwargs) -> Dict[str, Any]:
+        """Update a memory (v1). PUT /v1/memories/{memory_id}/"""
+        payload: Dict[str, Any] = {"text": text}
+        if "metadata" in kwargs and kwargs["metadata"] is not None:
+            payload["metadata"] = kwargs["metadata"]
+        return await self.put(f"memories/{memory_id}/", data=payload)
+
+    async def delete_memory(self, memory_id: str, **kwargs) -> Dict[str, Any]:
+        """Delete a memory (v1). DELETE /v1/memories/{memory_id}/"""
+        return await self.delete(f"memories/{memory_id}/")
+
+    async def get_memory_by_id(self, memory_id: str, **kwargs) -> Dict[str, Any]:
+        """Get a memory by ID (v1). GET /v1/memories/{memory_id}/"""
+        return await self.get(f"memories/{memory_id}/")
+
+    async def batch_operations(self, operation: str, **kwargs) -> Dict[str, Any]:
+        """
+        Batch operations (v1). Maps to /v1/batch/ endpoint
+        Supports both batch_update and batch_delete operations
+        """
+        # 根据操作类型确定HTTP方法和数据结构
+        if operation == "batch_update":
+            # 批量更新 - PUT /v1/batch/
+            payload = {
+                "updates": kwargs.get("updates", []),
+                "user_id": kwargs.get("user_id"),
+            }
+            return await self.put("batch/", data=payload)
+        
+        elif operation == "batch_delete":
+            # 批量删除 - DELETE /v1/batch/
+            payload = {
+                "memory_ids": kwargs.get("memory_ids", []),
+                "user_id": kwargs.get("user_id"),
+            }
+            return await self.delete("batch/", data=payload)
+        
+        elif operation == "analyze_batch":
+            # 分析批处理操作（自定义操作，返回可用的批处理选项）
+            return {
+                "available_operations": ["batch_update", "batch_delete"],
+                "endpoints": {
+                    "batch_update": "/v1/batch/ (PUT)",
+                    "batch_delete": "/v1/batch/ (DELETE)"
+                },
+                "user_id": kwargs.get("user_id"),
+                "status": "success"
+            }
+        
+        else:
+            raise ValueError(f"Unsupported batch operation: {operation}")
+
+    async def batch_operations_v2(self, operation: str, **kwargs) -> Dict[str, Any]:
+        """
+        Batch operations (v2). Enhanced version with additional features
+        """
+        # V2版本可以添加更多高级功能
+        return await self.batch_operations(operation, **kwargs)

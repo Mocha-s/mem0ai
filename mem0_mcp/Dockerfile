@@ -1,56 +1,37 @@
-# Multi-stage build for Mem0 MCP Server
-FROM python:3.11-slim as builder
+# Mem0 MCP Server - Simplified Dockerfile
+FROM python:3.11-slim
 
-# Set build-time environment variables
+# Set environment variables for Python optimization
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create virtual environment
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
-
-# Production stage
-FROM python:3.11-slim as production
-
-# Set runtime environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/opt/venv/bin:$PATH" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONPATH="/app/src"
 
-# Create non-root user
+# Install system dependencies (minimal set)
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create non-root user for security
 RUN groupadd --gid 1000 mem0 && \
     useradd --uid 1000 --gid mem0 --shell /bin/bash --create-home mem0
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy virtual environment from builder stage
-COPY --from=builder /opt/venv /opt/venv
-
-# Create app directory and set ownership
-RUN mkdir -p /app && chown -R mem0:mem0 /app
+# Set working directory
 WORKDIR /app
+
+# Copy requirements first for better layer caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
 
 # Copy application code
 COPY --chown=mem0:mem0 . .
 
-# Create directories for logs and data
+# Create necessary directories
 RUN mkdir -p /app/logs /app/data && \
     chown -R mem0:mem0 /app/logs /app/data
 
@@ -64,7 +45,7 @@ EXPOSE 8001
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8001/health || exit 1
 
-# Default configuration
+# Default environment variables
 ENV MCP_HOST=0.0.0.0 \
     MCP_PORT=8001 \
     MCP_DEBUG=false \
