@@ -1,0 +1,64 @@
+identity:
+  author: mocha
+  name: mem0_opensource
+  label:
+    en_US: Mem0 Advanced Memory
+    zh_Hans: Mem0高级记忆系统
+    pt_BR: Mem0 Memória Avançada
+  description:
+    en_US: Enterprise-grade AI memory management with advanced features and graph support
+    zh_Hans: 企业级AI记忆管理，支持高级功能和图谱处理
+    pt_BR: Gerenciamento de memória IA de nível empresarial com recursos avançados
+  icon: mem0.png
+
+credentials_for_provider:
+  mem0_api_key:
+    type: secret-input
+    required: true
+    label:
+      en_US: Mem0 API key
+      zh_Hans: Mem0 API Key
+      pt_BR: Mem0 API key
+    placeholder:
+      en_US: "Please input your Mem0 API key"
+      zh_Hans: "请输入你的 Mem0 API Key"
+      pt_BR: "Please input your Mem0 API key"
+    help:
+      en_US: "Visit Mem0 AI Dashboard to register and obtain API key for advanced memory management"
+      zh_Hans: "访问 Mem0 AI 仪表板注册账号并获取高级记忆管理的 API Key"
+      pt_BR: "Visite o Dashboard Mem0 AI para registrar e obter chave API para gerenciamento avançado de memória"
+    url: https://app.mem0.ai/dashboard/api-keys
+  mem0_api_url:
+    type: text-input
+    required: false
+    default: "http://localhost:8000"
+    label:
+      en_US: Mem0 API URL
+      zh_Hans: Mem0 API 地址
+      pt_BR: Mem0 API URL
+    placeholder:
+      en_US: "http://localhost:8000 or https://api.mem0.ai"
+      zh_Hans: "http://localhost:8000 或 https://api.mem0.ai"
+      pt_BR: "http://localhost:8000 ou https://api.mem0.ai"
+    help:
+      en_US: "API endpoint for Mem0 service (localhost:8000 for self-hosted, api.mem0.ai for cloud)"
+      zh_Hans: "Mem0服务的API端点（本地部署使用 localhost:8000，云端使用 api.mem0.ai）"
+      pt_BR: "Endpoint da API para serviço Mem0 (localhost:8000 para auto-hospedado, api.mem0.ai para nuvem)"
+
+tools:
+  # 📝 Memory Creation & Management (v0.3.0)
+  - tools/add_memory.yaml              # 💾 Basic memory storage + custom categories + async
+  - tools/add_multimodal_memory.yaml   # 🎨 Multimodal content + custom instructions + context
+
+  # 🔍 Memory Retrieval & Search (v0.3.0) 
+  - tools/search_memories.yaml         # 🔍⚡ Advanced search + graph memory + criteria-based
+  - tools/list_memories.yaml           # 📋 Batch retrieval + selective memory + advanced filtering
+
+  # ⚙️ Memory Operations (v0.3.0)
+  - tools/update_memory.yaml           # ✏️ Memory updates + timestamp control + metadata
+  - tools/delete_memory.yaml           # 🗑️ Memory removal + async processing
+
+  # ✅ 6个优化核心工具：完整CRUD + 10个高级功能 + 100%覆盖率
+extra:
+  python:
+    source: provider/mem0.py 

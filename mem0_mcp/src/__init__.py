@@ -1,9 +1,13 @@
 """
-Mem0 Model Context Protocol (MCP) Server
+Mem0 MCP Server Package
 
-A MCP-compliant server that provides remote access to Mem0 memory services
-through standardized tools and protocol.
+A Model Context Protocol server providing intelligent memory capabilities.
 """
 
-__version__ = "1.0.0"
+__version__ = "0.1.0"
 __author__ = "Mem0 Team"
+__description__ = "MCP server for Mem0 intelligent memory operations"
+
+from .server import MCPServer
+
+__all__ = ["MCPServer"]

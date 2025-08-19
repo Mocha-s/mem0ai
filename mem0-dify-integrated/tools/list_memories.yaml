@@ -1,0 +1,206 @@
+identity:
+  name: list_memories
+  author: mocha (v0.3.0 Optimization by mocha, Original by yevanchen)
+  label:
+    en_US: 📋 List Memories
+    zh_Hans: 📋 列出记忆
+    pt_BR: 📋 Listar Memórias
+    ja_JP: 📋 メモリリスト
+description:
+  human:
+    en_US: List memories with advanced filtering, pagination, and sorting capabilities using V2 API.
+    zh_Hans: 使用V2 API列出记忆，支持高级过滤、分页和排序功能。
+    pt_BR: Listar memórias com recursos avançados de filtragem, paginação e classificação usando API V2.
+    ja_JP: V2 APIを使用して高度なフィルタリング、ページネーション、ソート機能でメモリを一覧表示します。
+  llm: This tool lists memories using the V2 API with advanced features like filtering, pagination, and sorting. It supports multiple identity types (user_id, agent_id, run_id) and returns detailed memory information with metadata.
+
+parameters:
+  - name: user_id
+    type: string
+    required: false
+    label:
+      en_US: User ID
+      zh_Hans: 用户ID
+      pt_BR: ID do Usuário
+      ja_JP: ユーザーID
+    human_description:
+      en_US: Unique identifier for the user whose memories to retrieve
+      zh_Hans: 要获取记忆的用户的唯一标识符
+      pt_BR: Identificador único do usuário cujas memórias devem ser recuperadas
+      ja_JP: メモリを取得するユーザーの一意識別子
+    llm_description: The unique identifier for the user whose memories should be retrieved. Use this to get memories specific to a particular user.
+    form: llm
+
+  - name: agent_id
+    type: string
+    required: false
+    label:
+      en_US: Agent ID
+      zh_Hans: 代理ID
+      pt_BR: ID do Agente
+      ja_JP: エージェントID
+    human_description:
+      en_US: Unique identifier for the AI agent whose memories to retrieve
+      zh_Hans: 要获取记忆的AI代理的唯一标识符
+      pt_BR: Identificador único do agente de IA cujas memórias devem ser recuperadas
+      ja_JP: メモリを取得するAIエージェントの一意識別子
+    llm_description: The unique identifier for the AI agent whose memories should be retrieved. Use this to get memories specific to a particular AI agent.
+    form: llm
+
+  - name: run_id
+    type: string
+    required: false
+    label:
+      en_US: Run ID
+      zh_Hans: 运行ID
+      pt_BR: ID da Execução
+      ja_JP: 実行ID
+    human_description:
+      en_US: Unique identifier for the conversation session whose memories to retrieve
+      zh_Hans: 要获取记忆的对话会话的唯一标识符
+      pt_BR: Identificador único da sessão de conversa cujas memórias devem ser recuperadas
+      ja_JP: メモリを取得する会話セッションの一意識別子
+    llm_description: The unique identifier for the conversation session whose memories should be retrieved. Use this to get memories from a specific conversation session.
+    form: llm
+
+  - name: limit
+    type: number
+    required: false
+    default: 50
+    label:
+      en_US: Limit
+      zh_Hans: 限制数量
+      pt_BR: Limite
+      ja_JP: 制限
+    human_description:
+      en_US: Maximum number of memories to retrieve (1-100)
+      zh_Hans: 要获取的记忆的最大数量（1-100）
+      pt_BR: Número máximo de memórias a serem recuperadas (1-100)
+      ja_JP: 取得するメモリの最大数（1-100）
+    llm_description: The maximum number of memories to retrieve in a single request. Must be between 1 and 100.
+    form: llm
+
+  - name: offset
+    type: number
+    required: false
+    default: 0
+    label:
+      en_US: Offset
+      zh_Hans: 偏移量
+      pt_BR: Deslocamento
+      ja_JP: オフセット
+    human_description:
+      en_US: Number of memories to skip for pagination
+      zh_Hans: 分页时要跳过的记忆数量
+      pt_BR: Número de memórias a serem ignoradas para paginação
+      ja_JP: ページネーションでスキップするメモリ数
+    llm_description: The number of memories to skip for pagination. Use this with limit to implement pagination.
+    form: llm
+
+  - name: filters
+    type: string
+    required: false
+    label:
+      en_US: Filters
+      zh_Hans: 过滤器
+      pt_BR: Filtros
+      ja_JP: フィルター
+    human_description:
+      en_US: 'JSON string for advanced filtering (e.g., {"category": "work", "score": {"$gte": 0.8}})'
+      zh_Hans: '用于高级过滤的JSON字符串（例如：{"category": "work", "score": {"$gte": 0.8}}）'
+      pt_BR: 'String JSON para filtragem avançada (ex: {"category": "work", "score": {"$gte": 0.8}})'
+      ja_JP: '高度なフィルタリング用のJSON文字串（例：{"category": "work", "score": {"$gte": 0.8}}）'
+    llm_description: A JSON string containing filter criteria for advanced memory filtering. Supports MongoDB-style query operators.
+    form: llm
+
+  - name: sort
+    type: string
+    required: false
+    label:
+      en_US: Sort
+      zh_Hans: 排序
+      pt_BR: Classificação
+      ja_JP: ソート
+    human_description:
+      en_US: 'JSON string for sorting (e.g., {"created_at": -1, "score": 1})'
+      zh_Hans: '用于排序的JSON字符串（例如：{"created_at": -1, "score": 1}）'
+      pt_BR: 'String JSON para classificação (ex: {"created_at": -1, "score": 1})'
+      ja_JP: 'ソート用のJSON文字列（例：{"created_at": -1, "score": 1}）'
+    llm_description: A JSON string containing sort criteria. Use 1 for ascending and -1 for descending order.
+    form: llm
+
+  - name: memory_priority
+    type: string
+    required: false
+    label:
+      en_US: Memory Priority
+      zh_Hans: 记忆优先级
+      pt_BR: Prioridade da Memória
+    human_description:
+      en_US: Filter by memory priority level (high, medium, low)
+      zh_Hans: 按记忆优先级过滤 (high, medium, low)
+      pt_BR: Filtrar por nível de prioridade da memória (high, medium, low)
+    llm_description: Filter memories by priority level for selective memory management
+    form: llm
+
+  - name: importance_threshold
+    type: number
+    required: false
+    label:
+      en_US: Importance Threshold
+      zh_Hans: 重要性阈值
+      pt_BR: Limite de Importância
+    human_description:
+      en_US: Minimum importance score for selective memory retrieval (0.0-1.0)
+      zh_Hans: 选择性记忆检索的最低重要性分数 (0.0-1.0)
+      pt_BR: Pontuação mínima de importância para recuperação seletiva de memória (0.0-1.0)
+    llm_description: Minimum importance score for selective memory retrieval
+    form: llm
+
+  - name: auto_prune
+    type: boolean
+    required: false
+    default: false
+    label:
+      en_US: Auto Prune
+      zh_Hans: 自动清理
+      pt_BR: Limpeza Automática
+    human_description:
+      en_US: Enable automatic pruning of low-priority memories during retrieval
+      zh_Hans: 在检索过程中启用低优先级记忆的自动清理
+      pt_BR: Habilitar limpeza automática de memórias de baixa prioridade durante a recuperação
+    llm_description: Enable automatic pruning of low-priority memories during retrieval
+    form: form
+
+  - name: memory_capacity_limit
+    type: number
+    required: false
+    label:
+      en_US: Memory Capacity Limit
+      zh_Hans: 记忆容量限制
+      pt_BR: Limite de Capacidade de Memória
+    human_description:
+      en_US: Maximum number of memories to maintain (triggers selective pruning)
+      zh_Hans: 要维护的最大记忆数量（触发选择性清理）
+      pt_BR: Número máximo de memórias a manter (aciona limpeza seletiva)
+    llm_description: Maximum number of memories to maintain for selective memory management
+    form: llm
+
+  - name: use_async_client
+    type: boolean
+    required: false
+    default: false
+    label:
+      en_US: Use Async Client
+      zh_Hans: 使用异步客户端
+      pt_BR: Usar Cliente Assíncrono
+    human_description:
+      en_US: Enable asynchronous processing for better performance
+      zh_Hans: 启用异步处理以获得更好的性能
+      pt_BR: Habilitar processamento assíncrono para melhor desempenho
+    llm_description: Enable asynchronous processing for better performance
+    form: form
+
+extra:
+  python:
+    source: tools/list_memories.py

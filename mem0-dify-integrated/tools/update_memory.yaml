@@ -1,0 +1,69 @@
+identity:
+  name: update_mem0ai_memory
+  author: mocha (v0.3.0 Optimization by mocha, Original by yevanchen)
+  label:
+    en_US: ✏️ Update Memory
+    zh_Hans: ✏️ 更新记忆
+    pt_BR: ✏️ Atualizar Memória
+    ja_JP: ✏️ メモリ更新
+description:
+  human:
+    en_US: Update the content of an existing memory in the Mem0 memory store.
+    zh_Hans: 更新Mem0记忆存储中现有记忆的内容。
+    pt_BR: Atualizar o conteúdo de uma memória existente no armazenamento de memória Mem0.
+    ja_JP: Mem0メモリストア内の既存のメモリの内容を更新します。
+  llm: This tool updates the content of an existing memory in the Mem0 memory store. Use this when you need to modify, correct, or enhance existing memories with new information.
+
+parameters:
+  - name: memory_id
+    type: string
+    required: true
+    label:
+      en_US: Memory ID
+      zh_Hans: 记忆ID
+      pt_BR: ID da Memória
+      ja_JP: メモリID
+    human_description:
+      en_US: The unique identifier of the memory to update
+      zh_Hans: 要更新的记忆的唯一标识符
+      pt_BR: O identificador único da memória a ser atualizada
+      ja_JP: 更新するメモリの一意識別子
+    llm_description: The unique identifier (ID) of the memory that should be updated. This ID is typically obtained from previous memory retrieval or search operations.
+    form: llm
+
+  - name: new_memory
+    type: string
+    required: true
+    label:
+      en_US: New Memory Content
+      zh_Hans: 新记忆内容
+      pt_BR: Novo Conteúdo da Memória
+      ja_JP: 新しいメモリ内容
+    human_description:
+      en_US: The new content that will replace the existing memory
+      zh_Hans: 将替换现有记忆的新内容
+      pt_BR: O novo conteúdo que substituirá a memória existente
+      ja_JP: 既存のメモリを置き換える新しい内容
+    llm_description: The new content that will replace the existing memory. This should be the complete updated version of the memory, not just the changes.
+    form: llm
+
+  - name: use_async_client
+    type: boolean
+    required: false
+    default: false
+    label:
+      en_US: Use Async Client
+      zh_Hans: 使用异步客户端
+      pt_BR: Usar Cliente Assíncrono
+      ja_JP: 非同期クライアントを使用
+    human_description:
+      en_US: Enable asynchronous processing for better update performance
+      zh_Hans: 启用异步处理以获得更好的更新性能
+      pt_BR: Habilitar processamento assíncrono para melhor desempenho de atualização
+      ja_JP: より良い更新パフォーマンスのために非同期処理を有効にする
+    llm_description: Enable asynchronous processing for better update performance
+    form: form
+
+extra:
+  python:
+    source: tools/update_memory.py

@@ -1,0 +1,376 @@
+{
+  "version": "2.0",
+  "metadata": {
+    "created": "2025-08-19",
+    "description": "Mem0 MCP Tool Services Registry",
+    "protocol_version": "2025-06-18"
+  },
+  "services": {
+    "add_memory": {
+      "name": "add_memory",
+      "title": "Add Memory Service",
+      "description": "Add new memory to Mem0 with intelligent extraction and conflict resolution",
+      "version": "1.0.0",
+      "category": "memory",
+      "endpoint": "src.services.add_memory.service:AddMemoryService",
+      "strategies": [
+        {
+          "name": "contextual",
+          "description": "Context-aware memory addition",
+          "default": true
+        },
+        {
+          "name": "graph",
+          "description": "Graph-based memory relationships"
+        },
+        {
+          "name": "multimodal", 
+          "description": "Support for images, audio, and text"
+        }
+      ],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array",
+            "description": "Conversation messages to extract memory from",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {"type": "string", "enum": ["user", "assistant"]},
+                "content": {"type": "string"}
+              }
+            }
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Unique user identifier"
+          },
+          "enable_graph": {
+            "type": "boolean",
+            "description": "Enable graph memory relationships",
+            "default": false
+          },
+          "metadata": {
+            "type": "object", 
+            "description": "Additional metadata to store with memory"
+          },
+          "infer": {
+            "type": "boolean",
+            "description": "Enable automatic fact inference",
+            "default": true
+          }
+        },
+        "required": ["messages", "user_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "message": {"type": "string"},
+          "memory_id": {"type": "string"},
+          "extracted_facts": {"type": "array"}
+        }
+      },
+      "dependencies": [],
+      "health_check": "/health",
+      "metrics": "/metrics"
+    },
+    
+    "search_memories": {
+      "name": "search_memories",
+      "title": "Search Memories Service", 
+      "description": "Search memories with advanced retrieval strategies and filtering",
+      "version": "1.0.0",
+      "category": "memory",
+      "endpoint": "src.services.search_memories.service:SearchMemoriesService",
+      "strategies": [
+        {
+          "name": "semantic",
+          "description": "Semantic vector similarity search",
+          "default": true
+        },
+        {
+          "name": "graph",
+          "description": "Graph-based relationship search"
+        },
+        {
+          "name": "advanced_retrieval",
+          "description": "Advanced retrieval with reranking"
+        },
+        {
+          "name": "hybrid",
+          "description": "Combination of multiple search strategies"
+        }
+      ],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural language search query"
+          },
+          "user_id": {
+            "type": "string", 
+            "description": "User identifier for scoped search"
+          },
+          "filters": {
+            "type": "object",
+            "description": "Advanced filtering criteria"
+          },
+          "strategy": {
+            "type": "string",
+            "description": "Search strategy to use",
+            "default": "semantic",
+            "enum": ["semantic", "graph", "advanced_retrieval", "hybrid"]
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Maximum number of results",
+            "default": 10,
+            "maximum": 100
+          },
+          "threshold": {
+            "type": "number",
+            "description": "Minimum similarity threshold",
+            "default": 0.7,
+            "minimum": 0.0,
+            "maximum": 1.0
+          }
+        },
+        "required": ["query", "user_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "message": {"type": "string"},
+          "memories": {"type": "array"},
+          "total_count": {"type": "integer"}
+        }
+      },
+      "dependencies": [],
+      "health_check": "/health",
+      "metrics": "/metrics"
+    },
+
+    "update_memory": {
+      "name": "update_memory",
+      "title": "Update Memory Service",
+      "description": "Update existing memory content and metadata",
+      "version": "1.0.0", 
+      "category": "memory",
+      "endpoint": "src.services.update_memory.service:UpdateMemoryService",
+      "strategies": [
+        {
+          "name": "single",
+          "description": "Update single memory by ID",
+          "default": true
+        },
+        {
+          "name": "batch", 
+          "description": "Batch update multiple memories"
+        }
+      ],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "description": "ID of memory to update"
+          },
+          "text": {
+            "type": "string",
+            "description": "New memory content"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Updated metadata"
+          },
+          "batch_updates": {
+            "type": "array",
+            "description": "Batch update operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "memory_id": {"type": "string"},
+                "text": {"type": "string"},
+                "metadata": {"type": "object"}
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object", 
+        "properties": {
+          "status": {"type": "string"},
+          "message": {"type": "string"},
+          "updated_count": {"type": "integer"}
+        }
+      },
+      "dependencies": [],
+      "health_check": "/health",
+      "metrics": "/metrics"
+    },
+
+    "delete_memory": {
+      "name": "delete_memory",
+      "title": "Delete Memory Service",
+      "description": "Delete memories by ID or filter criteria",
+      "version": "1.0.0",
+      "category": "memory", 
+      "endpoint": "src.services.delete_memory.service:DeleteMemoryService",
+      "strategies": [
+        {
+          "name": "single",
+          "description": "Delete single memory by ID",
+          "default": true
+        },
+        {
+          "name": "batch",
+          "description": "Batch delete multiple memories"
+        },
+        {
+          "name": "filtered",
+          "description": "Delete memories by filter criteria"
+        }
+      ],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "description": "ID of memory to delete"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Delete all memories for user"
+          },
+          "filters": {
+            "type": "object",
+            "description": "Filter criteria for deletion"
+          },
+          "batch_deletes": {
+            "type": "array",
+            "description": "Batch delete operations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "memory_id": {"type": "string"}
+              }
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "message": {"type": "string"},
+          "deleted_count": {"type": "integer"}
+        }
+      },
+      "dependencies": [],
+      "health_check": "/health", 
+      "metrics": "/metrics"
+    },
+
+    "selective_memory": {
+      "name": "selective_memory",
+      "title": "Selective Memory Service",
+      "description": "Aggregated service for selective memory operations",
+      "version": "1.0.0",
+      "category": "aggregated",
+      "endpoint": "src.services.selective_memory.service:SelectiveMemoryService",
+      "strategies": [
+        {
+          "name": "criteria_based",
+          "description": "Memory selection based on criteria",
+          "default": true
+        }
+      ],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "criteria": {
+            "type": "object",
+            "description": "Selection criteria"
+          },
+          "operation": {
+            "type": "string",
+            "enum": ["add", "search", "update", "delete"],
+            "description": "Operation to perform on selected memories"
+          }
+        },
+        "required": ["criteria", "operation"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "message": {"type": "string"},
+          "results": {"type": "array"}
+        }
+      },
+      "dependencies": ["add_memory", "search_memories", "update_memory", "delete_memory"],
+      "health_check": "/health",
+      "metrics": "/metrics"
+    },
+
+    "criteria_retrieval": {
+      "name": "criteria_retrieval", 
+      "title": "Criteria Retrieval Service",
+      "description": "Specialized service for criteria-based memory retrieval",
+      "version": "1.0.0",
+      "category": "specialized",
+      "endpoint": "src.services.criteria_retrieval.service:CriteriaRetrievalService",
+      "strategies": [
+        {
+          "name": "advanced_criteria",
+          "description": "Advanced criteria evaluation",
+          "default": true
+        }
+      ],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "criteria": {
+            "type": "object",
+            "description": "Complex retrieval criteria"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "User identifier"
+          }
+        },
+        "required": ["criteria", "user_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "message": {"type": "string"},
+          "memories": {"type": "array"},
+          "criteria_match_score": {"type": "number"}
+        }
+      },
+      "dependencies": ["search_memories"],
+      "health_check": "/health",
+      "metrics": "/metrics"
+    }
+  },
+  
+  "global_config": {
+    "max_retries": 3,
+    "timeout_seconds": 30,
+    "circuit_breaker": {
+      "failure_threshold": 5,
+      "reset_timeout_seconds": 60
+    },
+    "rate_limiting": {
+      "requests_per_minute": 1000,
+      "burst_size": 100
+    }
+  }
+}

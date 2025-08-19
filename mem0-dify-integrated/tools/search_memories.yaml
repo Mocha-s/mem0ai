@@ -1,0 +1,196 @@
+identity:
+  name: search_memories
+  author: mocha (v0.3.0 Optimization by mocha, Original by yevanchen)
+  label:
+    en_US: 🔍⚡ Search Memories
+    zh_Hans: 🔍⚡ 搜索记忆
+    pt_BR: 🔍⚡ Buscar Memórias
+    ja_JP: 🔍⚡ メモリ検索
+description:
+  human:
+    en_US: Search memories with advanced filtering and pagination using V2 API
+    zh_Hans: 使用V2 API搜索记忆，支持高级过滤和分页
+    pt_BR: Buscar memórias com filtragem avançada e paginação usando API V2
+    ja_JP: V2 APIを使用して高度なフィルタリングとページネーションでメモリを検索
+  llm: Search memories with advanced filtering and pagination using V2 API for precise memory retrieval
+parameters:
+  - name: query
+    type: string
+    required: true
+    label:
+      en_US: Query string
+      zh_Hans: 查询语句
+      pt_BR: Query string
+    human_description:
+      en_US: The query string is used to search for specific memories within the system. It can be a keyword, phrase, or sentence that describes the memory you're looking for.
+      zh_Hans: 查询语句用于在系统中搜索特定的记忆。它可以是一个关键词、短语或描述你正在寻找的记忆的句子。
+      pt_BR: A string de consulta é usada para buscar memórias específicas dentro do sistema. Ela pode ser uma palavra-chave, frase ou sentença que descreve a memória que você está procurando.
+    llm_description: The query string is used to search for specific memories within the system. It can be a keyword, phrase, or sentence that describes the memory you're looking for.
+    form: llm
+  - name: user_id
+    type: string
+    required: true
+    label:
+      en_US: User ID
+      zh_Hans: 用户ID
+      pt_BR: ID do Usuário
+    human_description:
+      en_US: User ID for memory filtering
+      zh_Hans: 用于记忆过滤的用户ID
+      pt_BR: ID do usuário para filtragem de memória
+    llm_description: User ID for memory filtering
+    form: llm
+  - name: agent_id
+    type: string
+    required: false
+    label:
+      en_US: Agent ID
+      zh_Hans: 代理ID
+      pt_BR: ID do Agente
+    human_description:
+      en_US: Optional agent ID for filtering memories by specific agent
+      zh_Hans: 可选的代理ID用于按特定代理过滤记忆
+      pt_BR: ID do agente opcional para filtrar memórias por agente específico
+    llm_description: Optional agent ID for filtering memories by specific agent
+    form: llm
+  - name: run_id
+    type: string
+    required: false
+    label:
+      en_US: Run ID
+      zh_Hans: 运行ID
+      pt_BR: ID da Execução
+    human_description:
+      en_US: Optional run ID for filtering memories by specific session
+      zh_Hans: 可选的运行ID用于按特定会话过滤记忆
+      pt_BR: ID de execução opcional para filtrar memórias por sessão específica
+    llm_description: Optional run ID for filtering memories by specific session
+    form: llm
+  - name: limit
+    type: number
+    required: false
+    default: 10
+    label:
+      en_US: Limit
+      zh_Hans: 限制数量
+      pt_BR: Limite
+    human_description:
+      en_US: Maximum number of memories to return (1-100)
+      zh_Hans: 返回的最大记忆数量 (1-100)
+      pt_BR: Número máximo de memórias a retornar (1-100)
+    llm_description: Maximum number of memories to return (1-100)
+    form: form
+  - name: similarity_threshold
+    type: number
+    required: false
+    default: 0.0
+    label:
+      en_US: Similarity Threshold
+      zh_Hans: 相似度阈值
+      pt_BR: Limite de Similaridade
+    human_description:
+      en_US: Minimum similarity score for results (0.0-1.0)
+      zh_Hans: 结果的最小相似度分数 (0.0-1.0)
+      pt_BR: Pontuação mínima de similaridade para resultados (0.0-1.0)
+    llm_description: Minimum similarity score for results (0.0-1.0)
+    form: form
+  - name: filters
+    type: string
+    required: false
+    label:
+      en_US: Advanced Filters (JSON)
+      zh_Hans: 高级过滤器 (JSON)
+      pt_BR: Filtros Avançados (JSON)
+    human_description:
+      en_US: Advanced filters in JSON format for complex queries
+      zh_Hans: JSON格式的高级过滤器用于复杂查询
+      pt_BR: Filtros avançados em formato JSON para consultas complexas
+    llm_description: Advanced filters in JSON format for complex queries (e.g., AND/OR logic with user_id and categories)
+    form: llm
+  - name: score_range
+    type: string
+    required: false
+    label:
+      en_US: Score Range
+      zh_Hans: 分数范围
+      pt_BR: Faixa de Pontuação
+    human_description:
+      en_US: Score range filter (e.g., "0.5-1.0") for criteria-based retrieval
+      zh_Hans: 分数范围过滤器 (例如："0.5-1.0") 用于基于条件的检索
+      pt_BR: Filtro de faixa de pontuação (ex "0.5-1.0") para recuperação baseada em critérios
+    llm_description: Filter memories by relevance score range for criteria-based retrieval
+    form: llm
+
+  - name: date_range
+    type: string
+    required: false
+    label:
+      en_US: Date Range
+      zh_Hans: 日期范围
+      pt_BR: Faixa de Data
+    human_description:
+      en_US: Date range filter (e.g., "2024-01-01,2024-12-31") for temporal criteria
+      zh_Hans: 日期范围过滤器 (例如："2024-01-01,2024-12-31") 用于时间条件
+      pt_BR: Filtro de faixa de data (ex "2024-01-01,2024-12-31") para critérios temporais
+    llm_description: Filter memories by creation date range for temporal criteria-based retrieval
+    form: llm
+
+  - name: category_filter
+    type: string
+    required: false
+    label:
+      en_US: Category Filter
+      zh_Hans: 分类过滤器
+      pt_BR: Filtro de Categoria
+    human_description:
+      en_US: Filter by specific categories for targeted memory retrieval
+      zh_Hans: 按特定分类过滤，用于定向记忆检索
+      pt_BR: Filtrar por categorias específicas para recuperação direcionada de memória
+    llm_description: Filter memories by categories for targeted retrieval
+    form: llm
+
+  - name: enable_graph
+    type: boolean
+    required: false
+    default: false
+    label:
+      en_US: Enable Graph Memory
+      zh_Hans: 启用图谱记忆
+      pt_BR: Habilitar Memória de Grafo
+    human_description:
+      en_US: Enable graph-based memory retrieval for entity relationships
+      zh_Hans: 启用基于图谱的记忆检索，用于实体关系
+      pt_BR: Habilitar recuperação de memória baseada em grafo para relacionamentos de entidades
+    llm_description: Enable graph memory features for entity relationships and connected information
+    form: llm
+
+  - name: graph_entities
+    type: string
+    required: false
+    label:
+      en_US: Graph Entities
+      zh_Hans: 图谱实体
+      pt_BR: Entidades do Grafo
+    human_description:
+      en_US: Specific entities to search in graph memory (comma-separated)
+      zh_Hans: 在图谱记忆中搜索的特定实体 (逗号分隔)
+      pt_BR: Entidades específicas para buscar na memória de grafo (separadas por vírgula)
+    llm_description: Specific entities to search for in graph memory
+    form: llm
+
+  - name: relationship_filter
+    type: string
+    required: false
+    label:
+      en_US: Relationship Filter
+      zh_Hans: 关系过滤器
+      pt_BR: Filtro de Relacionamento
+    human_description:
+      en_US: Filter by entity relationships (e.g., "works_at", "collaborates_with")
+      zh_Hans: 按实体关系过滤 (例如："works_at", "collaborates_with")
+      pt_BR: Filtrar por relacionamentos de entidades (ex "works_at", "collaborates_with")
+    llm_description: Filter memories by entity relationships in graph memory
+    form: llm
+extra:
+  python:
+    source: tools/search_memories.py

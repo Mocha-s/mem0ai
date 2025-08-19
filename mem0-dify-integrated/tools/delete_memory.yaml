@@ -1,0 +1,53 @@
+identity:
+  name: delete_mem0ai_memory
+  author: mocha (v0.3.0 Optimization by mocha, Original by yevanchen)
+  label:
+    en_US: 🗑️ Delete Memory
+    zh_Hans: 🗑️ 删除记忆
+    pt_BR: 🗑️ Excluir Memória
+    ja_JP: 🗑️ メモリ削除
+description:
+  human:
+    en_US: Delete a specific memory by its ID from the Mem0 memory store.
+    zh_Hans: 通过ID从Mem0记忆存储中删除特定记忆。
+    pt_BR: Excluir uma memória específica por seu ID do armazenamento de memória Mem0.
+    ja_JP: IDによってMem0メモリストアから特定のメモリを削除します。
+  llm: This tool deletes a specific memory from the Mem0 memory store using its unique ID. Use this when you need to remove outdated, incorrect, or unwanted memories. The operation is irreversible.
+
+parameters:
+  - name: memory_id
+    type: string
+    required: true
+    label:
+      en_US: Memory ID
+      zh_Hans: 记忆ID
+      pt_BR: ID da Memória
+      ja_JP: メモリID
+    human_description:
+      en_US: The unique identifier of the memory to delete
+      zh_Hans: 要删除的记忆的唯一标识符
+      pt_BR: O identificador único da memória a ser excluída
+      ja_JP: 削除するメモリの一意識別子
+    llm_description: The unique identifier (ID) of the memory that should be deleted. This ID is typically obtained from previous memory retrieval or search operations.
+    form: llm
+
+  - name: use_async_client
+    type: boolean
+    required: false
+    default: false
+    label:
+      en_US: Use Async Client
+      zh_Hans: 使用异步客户端
+      pt_BR: Usar Cliente Assíncrono
+      ja_JP: 非同期クライアントを使用
+    human_description:
+      en_US: Enable asynchronous processing for better deletion performance
+      zh_Hans: 启用异步处理以获得更好的删除性能
+      pt_BR: Habilitar processamento assíncrono para melhor desempenho de exclusão
+      ja_JP: より良い削除パフォーマンスのために非同期処理を有効にする
+    llm_description: Enable asynchronous processing for better deletion performance
+    form: form
+
+extra:
+  python:
+    source: tools/delete_memory.py

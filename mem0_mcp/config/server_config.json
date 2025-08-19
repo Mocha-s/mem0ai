@@ -1,0 +1,66 @@
+{
+  "name": "mem0-mcp-server",
+  "description": "Mem0 intelligent memory MCP server",
+  "version": "0.1.0",
+  "protocol_version": "2025-06-18",
+  "capabilities": {
+    "server": {
+      "tools": {
+        "listChanged": true
+      },
+      "resources": {
+        "subscribe": true,
+        "listChanged": true
+      },
+      "prompts": {
+        "listChanged": true
+      },
+      "logging": {},
+      "completions": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "add_memory",
+      "description": "Add new memory to Mem0 storage",
+      "category": "memory"
+    },
+    {
+      "name": "search_memories", 
+      "description": "Search existing memories",
+      "category": "memory"
+    },
+    {
+      "name": "update_memory",
+      "description": "Update existing memory",
+      "category": "memory"
+    },
+    {
+      "name": "delete_memory",
+      "description": "Delete memory by ID",
+      "category": "memory"
+    },
+    {
+      "name": "get_memory",
+      "description": "Get memory by ID",
+      "category": "memory"
+    }
+  ],
+  "resources": [
+    {
+      "uri_template": "memory://{memory_id}",
+      "description": "Access individual memory content",
+      "mimeType": "application/json"
+    },
+    {
+      "uri_template": "memories://search?query={query}",
+      "description": "Search memory results",
+      "mimeType": "application/json"
+    }
+  ],
+  "security": {
+    "user_consent_required": true,
+    "data_privacy_enabled": true,
+    "tool_execution_approval": true
+  }
+}

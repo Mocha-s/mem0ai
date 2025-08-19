@@ -1,30 +1,9 @@
 """
-MCP Protocol components
+Protocol Package
+
+JSON-RPC 2.0 protocol implementation following MCP 2025-06-18 specification.
 """
 
-from .jsonrpc import JSONRPCHandler, JSONRPCRequest, JSONRPCResponse, JSONRPCError
-from .mcp_handler import MCPProtocolHandler
-from .message_types import (
-    MCPMessage,
-    InitializeRequest,
-    InitializeResponse,
-    ToolsListRequest,
-    ToolsListResponse,
-    ToolsCallRequest,
-    ToolsCallResponse
-)
+from .messages import RequestMessage, ResponseMessage, NotificationMessage, ToolResult, ErrorResult, TextContent
 
-__all__ = [
-    'JSONRPCHandler',
-    'JSONRPCRequest', 
-    'JSONRPCResponse',
-    'JSONRPCError',
-    'MCPProtocolHandler',
-    'MCPMessage',
-    'InitializeRequest',
-    'InitializeResponse', 
-    'ToolsListRequest',
-    'ToolsListResponse',
-    'ToolsCallRequest',
-    'ToolsCallResponse'
-]
+__all__ = ["RequestMessage", "ResponseMessage", "NotificationMessage", "ToolResult", "ErrorResult", "TextContent"]

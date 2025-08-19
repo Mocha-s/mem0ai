@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<memory>
+  <item id="mem_1755582373534_aqgt5hbj3" time="2025/08/19 05:46">
+    <content>
+      用户请求为Mem0 MCP Server添加命令行参数支持，实现了：
+    
+      1. 支持 -host 和 -p 参数自定义服务器绑定地址和端口
+      2. 添加 argparse 模块解析命令行参数
+      3. 参数优先级：命令行 &gt; 环境变量 &gt; 默认值
+      4. 支持的参数：
+      - -host/--host: 服务器地址 (默认127.0.0.1)
+      - -p/--port: 端口号 (默认8080)
+      - --endpoint: API路径 (默认/mcp)
+      - --timeout: 会话超时 (默认3600秒)
+    
+      使用示例：
+      - python3 run_server_http.py -host 0.0.0.0 -p 8001
+      - python3 run_server_http.py --help
+    
+      技术实现：
+      - 修改run_server_http.py文件
+      - 添加argparse导入和参数解析逻辑
+      - 更新MCPServerConfig构造函数使用解析后的参数
+      - 在帮助信息中添加使用示例
+    
+      这为Mem0 MCP Server提供了灵活的部署配置选项，特别适合在不同环境中快速调整网络绑定设置。
+    </content>
+    <tags>#工具使用</tags>
+  </item>
+</memory>

@@ -1,0 +1,66 @@
+{
+  "version": "2.0.0",
+  "source": "project",
+  "metadata": {
+    "version": "2.0.0",
+    "description": "project 级资源注册表",
+    "createdAt": "2025-08-19T07:38:51.005Z",
+    "updatedAt": "2025-08-19T07:38:51.007Z",
+    "resourceCount": 3
+  },
+  "resources": [
+    {
+      "id": "mcp-troubleshooting",
+      "source": "project",
+      "protocol": "execution",
+      "name": "Mcp Troubleshooting 执行模式",
+      "description": "执行模式，定义具体的行为模式",
+      "reference": "@project://.promptx/resource/role/mcp-protocol-expert/execution/mcp-troubleshooting.execution.md",
+      "metadata": {
+        "createdAt": "2025-08-19T07:38:51.006Z",
+        "updatedAt": "2025-08-19T07:38:51.006Z",
+        "scannedAt": "2025-08-19T07:38:51.006Z",
+        "path": "role/mcp-protocol-expert/execution/mcp-troubleshooting.execution.md"
+      }
+    },
+    {
+      "id": "mcp-protocol-expert",
+      "source": "project",
+      "protocol": "role",
+      "name": "Mcp Protocol Expert 角色",
+      "description": "专业角色，提供特定领域的专业能力",
+      "reference": "@project://.promptx/resource/role/mcp-protocol-expert/mcp-protocol-expert.role.md",
+      "metadata": {
+        "createdAt": "2025-08-19T07:38:51.006Z",
+        "updatedAt": "2025-08-19T07:38:51.006Z",
+        "scannedAt": "2025-08-19T07:38:51.006Z",
+        "path": "role/mcp-protocol-expert/mcp-protocol-expert.role.md"
+      }
+    },
+    {
+      "id": "protocol-debugging",
+      "source": "project",
+      "protocol": "thought",
+      "name": "Protocol Debugging 思维模式",
+      "description": "思维模式，指导AI的思考方式",
+      "reference": "@project://.promptx/resource/role/mcp-protocol-expert/thought/protocol-debugging.thought.md",
+      "metadata": {
+        "createdAt": "2025-08-19T07:38:51.006Z",
+        "updatedAt": "2025-08-19T07:38:51.006Z",
+        "scannedAt": "2025-08-19T07:38:51.006Z",
+        "path": "role/mcp-protocol-expert/thought/protocol-debugging.thought.md"
+      }
+    }
+  ],
+  "stats": {
+    "totalResources": 3,
+    "byProtocol": {
+      "execution": 1,
+      "role": 1,
+      "thought": 1
+    },
+    "bySource": {
+      "project": 3
+    }
+  }
+}

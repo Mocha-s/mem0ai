@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<memory>
+  <item id="mem_1755580117129_rpls5ciwi" time="2025/08/19 05:08">
+    <content>
+      用户在运行mem0_mcp项目的run_server_http.py时遇到ModuleNotFoundError: No module named &#x27;server.main&#x27;错误。问题是因为src/server/__init__.py文件试图导入不存在的main模块。需要修复导入路径或者创建缺失的模块文件。项目结构显示应该从mcp_server.py导入，而不是main.py。
+    </content>
+    <tags>#其他</tags>
+  </item>
+</memory>

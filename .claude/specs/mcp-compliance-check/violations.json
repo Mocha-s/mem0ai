@@ -1,0 +1,95 @@
+{
+  "analysis_metadata": {
+    "timestamp": "2025-08-19T12:19:49.860368",
+    "mcp_version": "2025-06-18",
+    "analyzer_version": "1.0.0",
+    "codebase_path": "/opt/mem0ai/mem0_mcp",
+    "total_violations": 6
+  },
+  "violation_summary": {
+    "critical": 2,
+    "high": 2,
+    "medium": 2,
+    "low": 0
+  },
+  "violations": [
+    {
+      "file_path": "/opt/mem0ai/mem0_mcp/src/transport/streamable_http.py",
+      "line_number": 139,
+      "violation_type": "json_rpc_version_validation",
+      "severity": "critical",
+      "risk_score": 9,
+      "message": "JSON-RPC version not validated in incoming requests",
+      "mcp_requirement": "All JSON-RPC requests MUST include 'jsonrpc': '2.0' and be validated",
+      "current_implementation": "Generates correct jsonrpc field but doesn't validate incoming requests",
+      "recommended_fix": "Add explicit validation: if message.get('jsonrpc') != '2.0': return error",
+      "code_example": "\n# Add to _handle_json_rpc_request method after line 131:\nif message.get('jsonrpc') != '2.0':\n    return {\n        \"jsonrpc\": \"2.0\", \n        \"error\": {\"code\": -32600, \"message\": \"Invalid Request - jsonrpc version must be 2.0\"},\n        \"id\": message.get('id')\n    }",
+      "specification_reference": "MCP 2025-06-18 Section 3.1 JSON-RPC Foundation"
+    },
+    {
+      "file_path": "/opt/mem0ai/mem0_mcp/src/transport/streamable_http.py",
+      "line_number": 203,
+      "violation_type": "protocol_version_mismatch",
+      "severity": "high",
+      "risk_score": 7,
+      "message": "Protocol version check allows unsupported versions",
+      "mcp_requirement": "MUST support MCP protocol version 2025-06-18",
+      "current_implementation": "Accepts both 2025-06-18 and 2025-03-26 versions",
+      "recommended_fix": "Only accept 2025-06-18 protocol version",
+      "code_example": "\n# Fix in _handle_post method:\nprotocol_version = request.headers.get('MCP-Protocol-Version', '2025-06-18')\nif protocol_version != '2025-06-18':\n    raise web.HTTPBadRequest(text=\"Unsupported protocol version. Only 2025-06-18 supported.\")",
+      "specification_reference": "MCP 2025-06-18 Section 2.1 Protocol Versioning"
+    },
+    {
+      "file_path": "/opt/mem0ai/mem0_mcp/src/transport/streamable_http.py",
+      "line_number": 505,
+      "violation_type": "single_endpoint_missing",
+      "severity": "high",
+      "risk_score": 6,
+      "message": "Single endpoint pattern not clearly implemented",
+      "mcp_requirement": "MUST support single endpoint for all HTTP methods",
+      "current_implementation": "Routes defined but endpoint structure unclear",
+      "recommended_fix": "Ensure /mcp endpoint handles GET, POST, DELETE methods",
+      "code_example": null,
+      "specification_reference": "MCP 2025-06-18 Section 4.2 Transport Endpoints"
+    },
+    {
+      "file_path": "/opt/mem0ai/mem0_mcp/src/server/mcp_server.py",
+      "line_number": 318,
+      "violation_type": "limited_error_codes",
+      "severity": "medium",
+      "risk_score": 4,
+      "message": "Limited JSON-RPC error code usage",
+      "mcp_requirement": "SHOULD use standard JSON-RPC error codes",
+      "current_implementation": "Uses error codes: []",
+      "recommended_fix": "Implement comprehensive JSON-RPC error code handling",
+      "code_example": null,
+      "specification_reference": "MCP 2025-06-18 Section 6.3 Error Handling"
+    },
+    {
+      "file_path": "/opt/mem0ai/mem0_mcp/src/gateway/tool_manager.py",
+      "line_number": 133,
+      "violation_type": "missing_tools_list",
+      "severity": "critical",
+      "risk_score": 8,
+      "message": "tools/list method implementation incomplete",
+      "mcp_requirement": "MUST implement tools/list method",
+      "current_implementation": "Method present but compliance verification needed",
+      "recommended_fix": "Ensure tools/list returns proper MCP format",
+      "code_example": null,
+      "specification_reference": "MCP 2025-06-18 Section 7.1 Tool Discovery"
+    },
+    {
+      "file_path": "/opt/mem0ai/mem0_mcp/src/gateway/tool_manager.py",
+      "line_number": 47,
+      "violation_type": "inadequate_tool_error_handling",
+      "severity": "medium",
+      "risk_score": 5,
+      "message": "Tool execution error handling needs improvement",
+      "mcp_requirement": "Tool calls MUST handle errors gracefully with proper codes",
+      "current_implementation": "Basic error handling present",
+      "recommended_fix": "Enhance error handling with specific error codes and messages",
+      "code_example": null,
+      "specification_reference": "MCP 2025-06-18 Section 7.3 Tool Execution"
+    }
+  ]
+}

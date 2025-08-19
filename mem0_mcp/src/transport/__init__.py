@@ -1,11 +1,9 @@
 """
-Transport layer components for MCP server
+Transport Package
+
+Transport layer implementations for MCP (Streamable HTTP).
 """
 
-from .base_transport import BaseTransport
-from .http_transport import HTTPTransport
+from .streamable_http import StreamableHTTPTransport, MCPSession
 
-__all__ = [
-    'BaseTransport',
-    'HTTPTransport'
-]
+__all__ = ["StreamableHTTPTransport", "MCPSession"]
