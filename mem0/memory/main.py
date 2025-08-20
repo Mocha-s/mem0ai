@@ -27,6 +27,8 @@ from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import capture_event
 from mem0.memory.utils import (
     get_fact_retrieval_messages,
+    get_enhanced_fact_retrieval_messages,
+    generate_categories_for_memory,
     parse_messages,
     parse_vision_messages,
     process_telemetry_filters,
@@ -334,7 +336,7 @@ class Memory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp)
+            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp, custom_categories)
             future2 = executor.submit(self._add_to_graph, messages, effective_filters, enable_graph)
 
             concurrent.futures.wait([future1, future2])
@@ -361,7 +363,7 @@ class Memory(MemoryBase):
 
         return {"results": vector_store_result}
 
-    def _add_to_vector_store(self, messages, metadata, filters, infer, includes=None, excludes=None, timestamp=None):
+    def _add_to_vector_store(self, messages, metadata, filters, infer, includes=None, excludes=None, timestamp=None, custom_categories=None):
         if not infer:
             returned_memories = []
             for message_dict in messages:
@@ -400,11 +402,12 @@ class Memory(MemoryBase):
 
         parsed_messages = parse_messages(messages)
 
+        # Use enhanced fact retrieval with categories support
         if self.config.custom_fact_extraction_prompt:
             system_prompt = self.config.custom_fact_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages, includes, excludes)
+            system_prompt, user_prompt = get_enhanced_fact_retrieval_messages(parsed_messages, includes, excludes)
 
         response = self.llm.generate_response(
             messages=[
@@ -416,10 +419,13 @@ class Memory(MemoryBase):
 
         try:
             response = remove_code_blocks(response)
-            new_retrieved_facts = json.loads(response)["facts"]
+            response_data = json.loads(response)
+            new_retrieved_facts = response_data.get("facts", [])
+            extracted_categories = response_data.get("categories", [])
         except Exception as e:
             logger.error(f"Error in new_retrieved_facts: {e}")
             new_retrieved_facts = []
+            extracted_categories = []
 
         if not new_retrieved_facts:
             logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
@@ -491,7 +497,25 @@ class Memory(MemoryBase):
                             metadata=deepcopy(metadata),
                             timestamp=timestamp,
                         )
-                        returned_memories.append({"id": memory_id, "memory": action_text, "event": event_type})
+                        
+                        # Generate categories for the new memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, custom_categories)
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, None)
+                        
+                        returned_memories.append({
+                            "id": memory_id, 
+                            "memory": action_text, 
+                            "event": event_type,
+                            "categories": memory_categories
+                        })
                     elif event_type == "UPDATE":
                         self._update_memory(
                             memory_id=temp_uuid_mapping[resp.get("id")],
@@ -499,12 +523,26 @@ class Memory(MemoryBase):
                             existing_embeddings=new_message_embeddings,
                             metadata=deepcopy(metadata),
                         )
+                        
+                        # Generate categories for the updated memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, custom_categories)
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, None)
+                        
                         returned_memories.append(
                             {
                                 "id": temp_uuid_mapping[resp.get("id")],
                                 "memory": action_text,
                                 "event": event_type,
                                 "previous_memory": resp.get("old_memory"),
+                                "categories": memory_categories
                             }
                         )
                     elif event_type == "DELETE":
@@ -514,6 +552,7 @@ class Memory(MemoryBase):
                                 "id": temp_uuid_mapping[resp.get("id")],
                                 "memory": action_text,
                                 "event": event_type,
+                                "categories": []  # Empty categories for deleted memories
                             }
                         )
                     elif event_type == "NONE":
@@ -1534,7 +1573,7 @@ class AsyncMemory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         vector_store_task = asyncio.create_task(
-            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp)
+            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp, custom_categories)
         )
         graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters, enable_graph))
 
@@ -1568,6 +1607,7 @@ class AsyncMemory(MemoryBase):
         includes: Optional[str] = None,
         excludes: Optional[str] = None,
         timestamp: Optional[int] = None,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
     ):
         if not infer:
             returned_memories = []
@@ -1606,11 +1646,12 @@ class AsyncMemory(MemoryBase):
             return returned_memories
 
         parsed_messages = parse_messages(messages)
+        # Use enhanced fact retrieval with categories support
         if self.config.custom_fact_extraction_prompt:
             system_prompt = self.config.custom_fact_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages, includes, excludes)
+            system_prompt, user_prompt = get_enhanced_fact_retrieval_messages(parsed_messages, includes, excludes)
 
         response = await asyncio.to_thread(
             self.llm.generate_response,
@@ -1619,10 +1660,13 @@ class AsyncMemory(MemoryBase):
         )
         try:
             response = remove_code_blocks(response)
-            new_retrieved_facts = json.loads(response)["facts"]
+            response_data = json.loads(response)
+            new_retrieved_facts = response_data.get("facts", [])
+            extracted_categories = response_data.get("categories", [])
         except Exception as e:
             logger.error(f"Error in new_retrieved_facts: {e}")
             new_retrieved_facts = []
+            extracted_categories = []
 
         if not new_retrieved_facts:
             logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
@@ -1719,19 +1763,64 @@ class AsyncMemory(MemoryBase):
             for task, resp, event_type, mem_id in memory_tasks:
                 try:
                     result_id = await task
+                    action_text = resp.get("text")
+                    
                     if event_type == "ADD":
-                        returned_memories.append({"id": result_id, "memory": resp.get("text"), "event": event_type})
+                        # Generate categories for the new memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, custom_categories
+                            )
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, None
+                            )
+                        
+                        returned_memories.append({
+                            "id": result_id, 
+                            "memory": action_text, 
+                            "event": event_type,
+                            "categories": memory_categories
+                        })
                     elif event_type == "UPDATE":
+                        # Generate categories for the updated memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, custom_categories
+                            )
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, None
+                            )
+                        
                         returned_memories.append(
                             {
                                 "id": mem_id,
-                                "memory": resp.get("text"),
+                                "memory": action_text,
                                 "event": event_type,
                                 "previous_memory": resp.get("old_memory"),
+                                "categories": memory_categories
                             }
                         )
                     elif event_type == "DELETE":
-                        returned_memories.append({"id": mem_id, "memory": resp.get("text"), "event": event_type})
+                        returned_memories.append({
+                            "id": mem_id, 
+                            "memory": action_text, 
+                            "event": event_type,
+                            "categories": []  # Empty categories for deleted memories
+                        })
                 except Exception as e:
                     logger.error(f"Error awaiting memory task (async): {e}")
         except Exception as e:

@@ -5,8 +5,10 @@ import requests
 import tempfile
 import os
 import logging
+import json
+from typing import Dict, List, Optional
 
-from mem0.configs.prompts import FACT_RETRIEVAL_PROMPT
+from mem0.configs.prompts import FACT_RETRIEVAL_PROMPT, ENHANCED_FACT_RETRIEVAL_PROMPT, get_categorization_prompt
 
 
 def get_fact_retrieval_messages(message, includes=None, excludes=None):
@@ -370,3 +372,71 @@ def extract_text_content(content):
     except Exception as e:
         logging.error(f"Error extracting text content: {str(e)}")
         raise Exception(f"Failed to extract text content: {str(e)}")
+
+
+def get_enhanced_fact_retrieval_messages(message, includes=None, excludes=None):
+    """
+    Generate enhanced fact retrieval messages with categories support.
+    
+    Args:
+        message (str): The input message to process
+        includes (str, optional): Include only specific types of memories
+        excludes (str, optional): Exclude specific types of memories
+    
+    Returns:
+        tuple: (system_prompt, user_prompt) for LLM fact and category extraction
+    """
+    base_prompt = ENHANCED_FACT_RETRIEVAL_PROMPT
+    
+    # Add selective memory instructions if provided
+    selective_instructions = []
+    
+    # Excludes have higher priority than includes
+    if excludes:
+        selective_instructions.append(f"IMPORTANT: Do NOT extract or store any information related to: {excludes}")
+    
+    if includes:
+        selective_instructions.append(f"FOCUS: Only extract and store information specifically related to: {includes}")
+    
+    # Append selective instructions to the base prompt if any exist
+    if selective_instructions:
+        base_prompt += "\n\n" + "\n".join(selective_instructions)
+    
+    return base_prompt, f"Input:\n{message}"
+
+
+def generate_categories_for_memory(memory_content: str, llm, custom_categories: Optional[List[str]] = None) -> List[str]:
+    """
+    Generate categories for a memory using LLM.
+    
+    Args:
+        memory_content (str): The memory content to categorize
+        llm: The language model to use for categorization
+        custom_categories (List[str], optional): Custom categories to use
+        
+    Returns:
+        List[str]: Generated categories for the memory
+    """
+    try:
+        # Convert dict format to string list if needed
+        if custom_categories and isinstance(custom_categories[0], dict):
+            custom_categories = [list(cat.keys())[0] for cat in custom_categories if cat]
+        
+        prompt = get_categorization_prompt(memory_content, custom_categories)
+        
+        response = llm.generate_response(
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        
+        response = remove_code_blocks(response)
+        categories_data = json.loads(response)
+        
+        categories = categories_data.get("categories", [])
+        
+        # Ensure categories are lowercase and clean
+        return [cat.strip().lower() for cat in categories if cat.strip()]
+        
+    except Exception as e:
+        logging.error(f"Error generating categories for memory: {e}")
+        return []
