@@ -14,6 +14,7 @@ class SQLiteManager:
         self._lock = threading.Lock()
         self._migrate_history_table()
         self._create_history_table()
+        self._create_categories_tables()
 
     def _migrate_history_table(self) -> None:
         """
@@ -197,22 +198,240 @@ class SQLiteManager:
         ]
 
     def reset(self) -> None:
-        """Drop and recreate the history table."""
+        """Drop and recreate all tables."""
         with self._lock:
             try:
                 self.connection.execute("BEGIN")
+                self.connection.execute("DROP TABLE IF EXISTS memory_categories")
+                self.connection.execute("DROP TABLE IF EXISTS categories")
                 self.connection.execute("DROP TABLE IF EXISTS history")
                 self.connection.execute("COMMIT")
                 self._create_history_table()
+                self._create_categories_tables()
             except Exception as e:
                 self.connection.execute("ROLLBACK")
-                logger.error(f"Failed to reset history table: {e}")
+                logger.error(f"Failed to reset tables: {e}")
                 raise
 
     def close(self) -> None:
         if self.connection:
             self.connection.close()
             self.connection = None
+
+    def _create_categories_tables(self) -> None:
+        """Create categories and memory_categories tables"""
+        with self._lock:
+            try:
+                self.connection.execute("BEGIN")
+                
+                # Create categories table
+                self.connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS categories (
+                        id           TEXT PRIMARY KEY,
+                        name         TEXT UNIQUE NOT NULL,
+                        description  TEXT,
+                        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """
+                )
+                
+                # Create memory_categories junction table
+                self.connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS memory_categories (
+                        memory_id    TEXT,
+                        category_id  TEXT,
+                        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (memory_id, category_id),
+                        FOREIGN KEY (category_id) REFERENCES categories(id)
+                    )
+                """
+                )
+                
+                # Create indexes for better query performance
+                self.connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_categories_memory ON memory_categories(memory_id)"
+                )
+                self.connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_categories_category ON memory_categories(category_id)"
+                )
+                self.connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name)"
+                )
+                
+                self.connection.execute("COMMIT")
+                
+            except Exception as e:
+                self.connection.execute("ROLLBACK")
+                logger.error(f"Failed to create categories tables: {e}")
+                raise
+
+    def add_category(self, name: str, description: Optional[str] = None) -> str:
+        """Add or get a category by name"""
+        category_id = str(uuid.uuid4())
+        
+        with self._lock:
+            try:
+                self.connection.execute("BEGIN")
+                
+                # Check if category already exists
+                cur = self.connection.execute("SELECT id FROM categories WHERE name = ?", (name,))
+                existing = cur.fetchone()
+                
+                if existing:
+                    self.connection.execute("COMMIT")
+                    return existing[0]
+                
+                # Create new category
+                self.connection.execute(
+                    """
+                    INSERT INTO categories (id, name, description, created_at, updated_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (category_id, name, description or f"Auto-generated category for {name}")
+                )
+                
+                self.connection.execute("COMMIT")
+                return category_id
+                
+            except Exception as e:
+                self.connection.execute("ROLLBACK")
+                logger.error(f"Failed to add category '{name}': {e}")
+                raise
+
+    def _get_or_create_category_within_transaction(self, name: str, description: Optional[str] = None) -> str:
+        """Get or create a category within an existing transaction (no lock or transaction management)"""
+        category_id = str(uuid.uuid4())
+        
+        # Check if category already exists
+        cur = self.connection.execute("SELECT id FROM categories WHERE name = ?", (name,))
+        existing = cur.fetchone()
+        
+        if existing:
+            return existing[0]
+        
+        # Create new category
+        self.connection.execute(
+            """
+            INSERT INTO categories (id, name, description, created_at, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (category_id, name, description or f"Auto-generated category for {name}")
+        )
+        
+        return category_id
+
+    def assign_memory_categories(self, memory_id: str, category_names: List[str]) -> None:
+        """Assign categories to a memory"""
+        with self._lock:
+            try:
+                self.connection.execute("BEGIN")
+                
+                # Remove existing category assignments
+                self.connection.execute(
+                    "DELETE FROM memory_categories WHERE memory_id = ?",
+                    (memory_id,)
+                )
+                
+                # Add new category assignments
+                for category_name in category_names:
+                    if category_name.strip():
+                        # Get or create category within the same transaction
+                        category_id = self._get_or_create_category_within_transaction(category_name.strip())
+                        
+                        # Create memory-category association
+                        self.connection.execute(
+                            """
+                            INSERT OR IGNORE INTO memory_categories (memory_id, category_id, created_at)
+                            VALUES (?, ?, CURRENT_TIMESTAMP)
+                            """,
+                            (memory_id, category_id)
+                        )
+                
+                self.connection.execute("COMMIT")
+                
+            except Exception as e:
+                self.connection.execute("ROLLBACK")
+                logger.error(f"Failed to assign categories to memory {memory_id}: {e}")
+                raise
+
+    def get_memory_categories(self, memory_id: str) -> List[str]:
+        """Get category names for a memory"""
+        with self._lock:
+            cur = self.connection.execute(
+                """
+                SELECT c.name
+                FROM categories c
+                JOIN memory_categories mc ON c.id = mc.category_id
+                WHERE mc.memory_id = ?
+                ORDER BY c.name
+                """,
+                (memory_id,)
+            )
+            return [row[0] for row in cur.fetchall()]
+
+    def get_all_categories(self) -> List[Dict[str, Any]]:
+        """Get all categories with their usage count"""
+        with self._lock:
+            cur = self.connection.execute(
+                """
+                SELECT c.id, c.name, c.description, c.created_at,
+                       COUNT(mc.memory_id) as usage_count
+                FROM categories c
+                LEFT JOIN memory_categories mc ON c.id = mc.category_id
+                GROUP BY c.id, c.name, c.description, c.created_at
+                ORDER BY usage_count DESC, c.name
+                """
+            )
+            return [
+                {
+                    "id": row[0],
+                    "name": row[1], 
+                    "description": row[2],
+                    "created_at": row[3],
+                    "usage_count": row[4]
+                }
+                for row in cur.fetchall()
+            ]
+
+    def get_memories_by_categories(self, category_names: List[str], limit: Optional[int] = None) -> List[str]:
+        """Get memory IDs that have any of the specified categories"""
+        if not category_names:
+            return []
+            
+        with self._lock:
+            placeholders = ", ".join("?" * len(category_names))
+            query = f"""
+                SELECT DISTINCT mc.memory_id
+                FROM memory_categories mc
+                JOIN categories c ON mc.category_id = c.id
+                WHERE c.name IN ({placeholders})
+                ORDER BY mc.created_at DESC
+            """
+            
+            if limit:
+                query += f" LIMIT {limit}"
+                
+            cur = self.connection.execute(query, category_names)
+            return [row[0] for row in cur.fetchall()]
+
+    def delete_memory_categories(self, memory_id: str) -> None:
+        """Remove all category associations for a memory"""
+        with self._lock:
+            try:
+                self.connection.execute("BEGIN")
+                self.connection.execute(
+                    "DELETE FROM memory_categories WHERE memory_id = ?",
+                    (memory_id,)
+                )
+                self.connection.execute("COMMIT")
+                
+            except Exception as e:
+                self.connection.execute("ROLLBACK")
+                logger.error(f"Failed to delete categories for memory {memory_id}: {e}")
+                raise
 
     def __del__(self):
         self.close()

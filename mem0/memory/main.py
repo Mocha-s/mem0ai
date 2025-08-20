@@ -636,6 +636,9 @@ class Memory(MemoryBase):
         if additional_metadata:
             result_item["metadata"] = additional_metadata
 
+        # Add categories to the result
+        result_item["categories"] = self.get_memory_categories(memory_id)
+
         return result_item
 
     def get_all(
@@ -765,6 +768,9 @@ class Memory(MemoryBase):
             additional_metadata = {k: v for k, v in mem.payload.items() if k not in core_and_promoted_keys}
             if additional_metadata:
                 memory_item_dict["metadata"] = additional_metadata
+
+            # Add categories to each memory
+            memory_item_dict["categories"] = self.get_memory_categories(mem.id)
 
             formatted_memories.append(memory_item_dict)
 
@@ -924,6 +930,9 @@ class Memory(MemoryBase):
             if additional_metadata:
                 memory_item_dict["metadata"] = additional_metadata
 
+            # Add categories to search results
+            memory_item_dict["categories"] = self.get_memory_categories(mem.id)
+
             if threshold is None or mem.score >= threshold:
                 original_memories.append(memory_item_dict)
 
@@ -1079,8 +1088,47 @@ class Memory(MemoryBase):
             actor_id=metadata.get("actor_id"),
             role=metadata.get("role"),
         )
+        
+        # Auto-categorize the memory after creation
+        self._auto_categorize_memory(memory_id, data, metadata)
+        
         capture_event("mem0._create_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
         return memory_id
+
+    def _auto_categorize_memory(self, memory_id, data, metadata):
+        """Automatically categorize a memory using LLM"""
+        try:
+            # Extract custom_categories from metadata if available
+            custom_categories = metadata.get("custom_categories")
+            
+            # Generate categories for this memory
+            categories = generate_categories_for_memory(data, self.llm, custom_categories)
+            
+            if categories:
+                # Store categories in database
+                self.db.assign_memory_categories(memory_id, categories)
+                logger.info(f"Assigned categories to memory {memory_id}: {categories}")
+        except Exception as e:
+            logger.error(f"Error auto-categorizing memory {memory_id}: {e}")
+
+    def get_memory_categories(self, memory_id):
+        """Get categories for a specific memory"""
+        return self.db.get_memory_categories(memory_id)
+
+    def get_all_categories(self):
+        """Get all available categories with usage statistics"""
+        return self.db.get_all_categories()
+
+    def search_by_categories(self, category_names, limit=None):
+        """Search memories by categories"""
+        memory_ids = self.db.get_memories_by_categories(category_names, limit)
+        memories = []
+        for memory_id in memory_ids:
+            memory = self.get(memory_id)
+            if memory:
+                memory["categories"] = self.get_memory_categories(memory_id)
+                memories.append(memory)
+        return memories
 
     def _retrieve_contextual_history(self, filters, limit=10):
         """
@@ -1345,6 +1393,10 @@ class Memory(MemoryBase):
             actor_id=new_metadata.get("actor_id"),
             role=new_metadata.get("role"),
         )
+        
+        # Re-categorize the memory after update
+        self._auto_categorize_memory(memory_id, data, new_metadata)
+        
         capture_event("mem0._update_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
         return memory_id
 
@@ -1352,6 +1404,10 @@ class Memory(MemoryBase):
         logger.info(f"Deleting memory with {memory_id=}")
         existing_memory = self.vector_store.get(vector_id=memory_id)
         prev_value = existing_memory.payload["data"]
+        
+        # Delete categories associations first
+        self.db.delete_memory_categories(memory_id)
+        
         self.vector_store.delete(vector_id=memory_id)
         self.db.add_history(
             memory_id,
