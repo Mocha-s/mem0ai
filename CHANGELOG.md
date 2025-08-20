@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.1 - 2025-08-19
+
+- Improved: 完善 MCP 服务架构，增强向后兼容性
+- Enhanced: 协议兼容性改进，确保服务健壮性
+- Fixed: 服务稳定性优化，提升错误处理机制
+
+标签：v0.1.1（"完善mcp服务，向后兼容协议，确保服务的健壮"）
+
 ## v0.1.0 - 2025-08-19
 
 - Added: 初步 MCP 支持与服务化重构骨架（`mem0_mcp/src/server/`, `mem0_mcp/src/services/`, `mem0_mcp/src/protocol/messages.py`, `mem0_mcp/src/transport/streamable_http.py`）
