@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  mem0-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${MCP_PORT:-8080}:8080"
+    environment:
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8080
+      - MCP_LOG_LEVEL=${MCP_LOG_LEVEL:-INFO}
+      - MCP_ENDPOINT_PATH=${MCP_ENDPOINT_PATH:-/mcp}
+      - MCP_SESSION_TIMEOUT=${MCP_SESSION_TIMEOUT:-3600}
+      - MCP_ALLOWED_ORIGINS=${MCP_ALLOWED_ORIGINS:-*}
+      - MEM0_API_URL=http://mem0-api:8000
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - mem0-network
+
+networks:
+  mem0-network:
+    external: true
+    name: mem0-network

@@ -8,6 +8,9 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 import logging
+import json
+import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -104,16 +107,22 @@ class BaseService(ABC):
             
             response = await strategy.execute(arguments, context)
             
-            # Convert to dict format
+            # Convert to dict format with strict schema compliance
             result = {
                 "status": response.status,
                 "message": response.message
             }
             
+            # Apply data with schema filtering for Dify strict compliance
             if response.data:
                 result.update(response.data)
             
-            if response.metadata:
+            # Filter response to match declared output_schema exactly
+            # This ensures compatibility with strict MCP clients like Dify
+            result = self._apply_output_schema_filter(result)
+            
+            # Add metadata only if not filtered out by schema compliance
+            if response.metadata and not self._is_strict_schema_mode():
                 result["_metadata"] = response.metadata
             
             return result
@@ -182,3 +191,53 @@ class BaseService(ABC):
             "strategies_count": len(self.strategies),
             "dependencies_count": len(self.config.dependencies)
         }
+    
+    def _is_strict_schema_mode(self) -> bool:
+        """Check if strict schema compliance is enabled"""
+        return os.getenv('MCP_STRICT_SCHEMA', 'true').lower() == 'true'
+    
+    def _apply_output_schema_filter(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter response to match declared output_schema exactly for strict MCP clients like Dify"""
+        if not self._is_strict_schema_mode():
+            return result
+        
+        try:
+            # Load output schema from tools registry
+            tools_registry_path = Path(__file__).parent.parent.parent / "registry" / "tools.json"
+            if not tools_registry_path.exists():
+                self.logger.warning(f"Tools registry not found at {tools_registry_path}, skipping schema filtering")
+                return result
+            
+            with open(tools_registry_path, 'r') as f:
+                tools_registry = json.load(f)
+            
+            service_config = tools_registry.get('services', {}).get(self.config.name)
+            if not service_config or 'output_schema' not in service_config:
+                self.logger.warning(f"No output_schema found for {self.config.name}, skipping schema filtering")
+                return result
+            
+            output_schema = service_config['output_schema']
+            schema_properties = output_schema.get('properties', {})
+            
+            # Filter result to only include properties declared in schema
+            filtered_result = {}
+            for key in schema_properties:
+                if key in result:
+                    filtered_result[key] = result[key]
+                # Add default values for required fields if missing
+                elif output_schema.get('required') and key in output_schema['required']:
+                    if schema_properties[key].get('type') == 'array':
+                        filtered_result[key] = []
+                    elif schema_properties[key].get('type') == 'integer':
+                        filtered_result[key] = 0
+                    elif schema_properties[key].get('type') == 'string':
+                        filtered_result[key] = ''
+                    else:
+                        filtered_result[key] = None
+            
+            self.logger.info(f"Schema filtering applied for {self.config.name}: {len(result)} -> {len(filtered_result)} fields")
+            return filtered_result
+            
+        except Exception as e:
+            self.logger.error(f"Schema filtering failed for {self.config.name}: {e}, returning original result")
+            return result

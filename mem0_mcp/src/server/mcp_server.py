@@ -12,10 +12,10 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
 # Use absolute imports since we're adding src to path
-from transport.streamable_http import StreamableHTTPTransport, MCPSession
-from gateway.tool_manager import tool_manager
-from registry.registry_manager import registry
-from protocol.messages import ToolResult, ErrorResult, TextContent
+from src.transport.streamable_http import StreamableHTTPTransport, MCPSession
+from src.gateway.tool_manager import tool_manager
+from src.registry.registry_manager import registry
+from src.protocol.messages import ToolResult, ErrorResult, TextContent
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,8 @@ class MCPServer:
         # Core MCP methods
         self.transport.register_handler("initialize", self._handle_initialize)
         self.transport.register_handler("notifications/initialized", self._handle_initialized)
+        # Also register a fallback for clients that send 'initialized' directly
+        self.transport.register_handler("initialized", self._handle_initialized)
         
         # Capability discovery
         self.transport.register_handler("tools/list", self._handle_tools_list)
@@ -152,14 +154,32 @@ class MCPServer:
             # Store client info in session
             session.client_info = client_info
             
-            # Return server capabilities
-            return {
-                "protocolVersion": self.config.protocol_version,
-                "serverInfo": self.server_info,
-                "capabilities": {
-                    "tools": {
-                        "listChanged": True
-                    },
+            # Multi-protocol support for Dify compatibility
+            client_version = protocol_version
+            client_name = client_info.get("name", "").lower()
+            negotiated_version = self.config.protocol_version  # Default: "2025-06-18"
+            
+            # Dify compatibility: Support multiple protocol versions
+            supported_versions = ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]
+            
+            if client_version in supported_versions:
+                negotiated_version = client_version
+                logger.info(f"🎯 CLIENT COMPAT: Using requested protocol version {negotiated_version}")
+            elif "dify" in client_name:
+                # Dify may work better with slightly older versions
+                negotiated_version = "2025-03-26"
+                logger.info(f"🎯 DIFY COMPAT: Using fallback protocol version {negotiated_version}")
+            
+            # Build capabilities - some older clients may not support all features
+            capabilities = {
+                "tools": {
+                    "listChanged": True
+                }
+            }
+            
+            # Add optional capabilities based on protocol version
+            if negotiated_version >= "2025-01-01":  # Modern versions
+                capabilities.update({
                     "resources": {
                         "subscribe": False,
                         "listChanged": False
@@ -168,23 +188,42 @@ class MCPServer:
                         "listChanged": False
                     },
                     "logging": {}
-                },
-                "instructions": "This is a Mem0 MCP server providing intelligent memory operations. Use the available tools to add, search, update, and delete memories."
+                })
+            
+            # Return server capabilities
+            response = {
+                "protocolVersion": negotiated_version,
+                "serverInfo": self.server_info,
+                "capabilities": capabilities
             }
+            
+            # Instructions field - some clients may not expect this
+            if not ("dify" in client_name and client_info.get("version", "").startswith("v1.7")):
+                response["instructions"] = "This is a Mem0 MCP server providing intelligent memory operations. Use the available tools to add, search, update, and delete memories."
+            
+            logger.debug(f"✅ INIT SUCCESS: protocol={negotiated_version}, client={client_name}")
+            return response
             
         except Exception as e:
             logger.error(f"Initialize error: {e}")
             raise Exception(f"Failed to initialize: {str(e)}")
     
     async def _handle_initialized(self, params: Dict[str, Any], session: MCPSession) -> None:
-        """Handle initialized notification"""
-        logger.info(f"Client initialized: {session.session_id}")
+        """Handle initialized notification - confirm session is ready"""
+        logger.info(f"📋 Client confirmed initialization: {session.session_id}")
         session.initialized = True
+        
+        # Log client info if available
+        if hasattr(session, 'client_info') and session.client_info:
+            client_name = session.client_info.get('name', 'unknown')
+            client_version = session.client_info.get('version', 'unknown')
+            logger.info(f"🔗 Session fully activated for {client_name} v{client_version}")
+        
         # No response required for notifications
     
     async def _handle_tools_list(self, params: Dict[str, Any], session: MCPSession) -> Dict[str, Any]:
         """Handle tools/list request - MCP 2025-06-18 compliant"""
-        logger.info(f"🔧 Tools list request started for session {session.session_id}")
+        logger.debug(f"🔧 Tools list request for session {session.session_id}")
         try:
             # Support pagination as per MCP specification
             cursor = params.get("cursor")
@@ -217,7 +256,7 @@ class MCPServer:
                 
                 mcp_tools.append(mcp_tool)
             
-            logger.info(f"🔧 Tools list prepared, returning {len(mcp_tools)} tools for session {session.session_id}")
+            logger.debug(f"🔧 Returning {len(mcp_tools)} tools for session {session.session_id}")
             
             # Return result with optional nextCursor for pagination
             result = {"tools": mcp_tools}
@@ -306,43 +345,82 @@ class MCPServer:
                 }
             else:
                 # Success result - format according to MCP tools specification
-                if isinstance(result, ToolResult):
-                    if result.structured_content:
-                        # MCP 2025-06-18: Support both structured and unstructured content
+                # Check if it's a ToolResult by class name as fallback (handles import edge cases)
+                is_tool_result = isinstance(result, ToolResult) or result.__class__.__name__ == 'ToolResult'
+                
+                if is_tool_result:
+                    # Convert ToolResult to JSON-serializable format
+                    response = {
+                        "isError": getattr(result, 'is_error', False)
+                    }
+                    
+                    # Handle content blocks - convert to JSON-serializable format
+                    if hasattr(result, 'content') and result.content:
+                        content_list = []
+                        for content_block in result.content:
+                            if hasattr(content_block, 'type') and hasattr(content_block, 'text'):
+                                content_list.append({
+                                    "type": content_block.type,
+                                    "text": content_block.text
+                                })
+                            elif isinstance(content_block, dict):
+                                content_list.append(content_block)
+                            else:
+                                # Fallback for string content
+                                content_list.append({
+                                    "type": "text",
+                                    "text": str(content_block)
+                                })
+                        response["content"] = content_list
+                    
+                    # Handle structured content
+                    if hasattr(result, 'structured_content') and result.structured_content:
+                        response["structuredContent"] = result.structured_content
+                    
+                    return response
+                else:
+                    # Simple result - wrap in text content
+                    # Handle case where result might be a ToolResult but not detected properly
+                    if hasattr(result, 'content') and hasattr(result, 'is_error'):
+                        # This is actually a ToolResult-like object
+                        content_list = []
+                        if hasattr(result, 'content') and result.content:
+                            for content_block in result.content:
+                                if hasattr(content_block, 'type') and hasattr(content_block, 'text'):
+                                    content_list.append({
+                                        "type": content_block.type,
+                                        "text": content_block.text
+                                    })
+                                elif isinstance(content_block, dict):
+                                    content_list.append(content_block)
+                                else:
+                                    # Fallback for string content
+                                    content_list.append({
+                                        "type": "text",
+                                        "text": str(content_block)
+                                    })
+                        
+                        response = {
+                            "content": content_list,
+                            "isError": getattr(result, 'is_error', False)
+                        }
+                        
+                        # Add structured content if available
+                        if hasattr(result, 'structured_content') and result.structured_content:
+                            response["structuredContent"] = result.structured_content
+                            
+                        return response
+                    else:
+                        # Truly simple result
                         return {
                             "content": [
                                 {
                                     "type": "text", 
-                                    "text": json.dumps(result.structured_content, indent=2, ensure_ascii=False)
+                                    "text": str(result)
                                 }
                             ],
-                            "structuredContent": result.structured_content,
                             "isError": False
                         }
-                    else:
-                        # Convert content blocks to proper format
-                        content_blocks = []
-                        for block in result.content:
-                            if hasattr(block, '__dict__'):
-                                content_blocks.append(block.__dict__)
-                            else:
-                                content_blocks.append(block)
-                        
-                        return {
-                            "content": content_blocks,
-                            "isError": False
-                        }
-                else:
-                    # Simple result - wrap in text content
-                    return {
-                        "content": [
-                            {
-                                "type": "text", 
-                                "text": json.dumps(result, indent=2, ensure_ascii=False)
-                            }
-                        ],
-                        "isError": False
-                    }
             
         except Exception as e:
             logger.error(f"Tool call error: {e}")

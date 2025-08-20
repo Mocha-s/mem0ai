@@ -4,8 +4,8 @@
   "metadata": {
     "version": "2.0.0",
     "description": "project 级资源注册表",
-    "createdAt": "2025-08-19T13:37:06.515Z",
-    "updatedAt": "2025-08-19T13:37:06.516Z",
+    "createdAt": "2025-08-19T15:14:01.897Z",
+    "updatedAt": "2025-08-19T15:14:01.901Z",
     "resourceCount": 3
   },
   "resources": [
@@ -17,9 +17,9 @@
       "description": "执行模式，定义具体的行为模式",
       "reference": "@project://.promptx/resource/role/mcp-developer/execution/mcp-developer.execution.md",
       "metadata": {
-        "createdAt": "2025-08-19T13:37:06.515Z",
-        "updatedAt": "2025-08-19T13:37:06.515Z",
-        "scannedAt": "2025-08-19T13:37:06.515Z",
+        "createdAt": "2025-08-19T15:14:01.899Z",
+        "updatedAt": "2025-08-19T15:14:01.899Z",
+        "scannedAt": "2025-08-19T15:14:01.899Z",
         "path": "role/mcp-developer/execution/mcp-developer.execution.md"
       }
     },
@@ -31,9 +31,9 @@
       "description": "专业角色，提供特定领域的专业能力",
       "reference": "@project://.promptx/resource/role/mcp-developer/mcp-developer.role.md",
       "metadata": {
-        "createdAt": "2025-08-19T13:37:06.515Z",
-        "updatedAt": "2025-08-19T13:37:06.515Z",
-        "scannedAt": "2025-08-19T13:37:06.515Z",
+        "createdAt": "2025-08-19T15:14:01.900Z",
+        "updatedAt": "2025-08-19T15:14:01.900Z",
+        "scannedAt": "2025-08-19T15:14:01.900Z",
         "path": "role/mcp-developer/mcp-developer.role.md"
       }
     },
@@ -45,9 +45,9 @@
       "description": "思维模式，指导AI的思考方式",
       "reference": "@project://.promptx/resource/role/mcp-developer/thought/mcp-developer.thought.md",
       "metadata": {
-        "createdAt": "2025-08-19T13:37:06.516Z",
-        "updatedAt": "2025-08-19T13:37:06.516Z",
-        "scannedAt": "2025-08-19T13:37:06.516Z",
+        "createdAt": "2025-08-19T15:14:01.900Z",
+        "updatedAt": "2025-08-19T15:14:01.900Z",
+        "scannedAt": "2025-08-19T15:14:01.900Z",
         "path": "role/mcp-developer/thought/mcp-developer.thought.md"
       }
     }

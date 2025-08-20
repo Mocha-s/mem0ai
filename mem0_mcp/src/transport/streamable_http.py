@@ -81,12 +81,13 @@ class StreamableHTTPTransport:
         # Check specific origin patterns
         return any(origin.startswith(allowed) for allowed in self.allowed_origins)
     
-    def _create_session(self) -> MCPSession:
+    def _create_session(self, session_id: Optional[str] = None) -> MCPSession:
         """Create a new MCP session"""
-        session_id = str(uuid.uuid4())
+        if not session_id:
+            session_id = str(uuid.uuid4())
         session = MCPSession(session_id=session_id)
         self.sessions[session_id] = session
-        logger.info(f"Created session: {session_id}")
+        logger.debug(f"Created session: {session_id}")
         return session
     
     def _get_session(self, session_id: Optional[str]) -> Optional[MCPSession]:
@@ -147,71 +148,111 @@ class StreamableHTTPTransport:
         request_id = message.get('id')
         logger.info(f"📨 Processing JSON-RPC request: {method} (id: {request_id}) for session {session.session_id}")
         
+        # Enhanced logging for specific clients (only essential info)
+        client_info = session.client_info or {}
+        if client_info.get('name', '').startswith('Dify'):
+            logger.info(f"🎯 DIFY CLIENT: {client_info.get('name')} {client_info.get('version')} - {method}")
+        
         if not method:
-            return {
+            error_response = {
                 "jsonrpc": "2.0",
                 "error": {"code": -32600, "message": "Invalid Request: method field required"},
                 "id": message.get('id')
             }
+            if client_info.get('name', '').startswith('Dify'):
+                logger.error(f"💥 DIFY ERROR: Missing method field")
+            return error_response
         
         handler = self.message_handlers.get(method)
         if not handler:
-            return {
+            logger.error(f"❌ Method not found: {method}. Available handlers: {list(self.message_handlers.keys())}")
+            error_response = {
                 "jsonrpc": "2.0",
                 "error": {"code": -32601, "message": f"Method not found: {method}"},
                 "id": message.get('id')
             }
+            if client_info.get('name', '').startswith('Dify'):
+                logger.error(f"💥 DIFY ERROR: Method not found: {method}")
+            return error_response
         
         try:
-            logger.info(f"🎯 Calling handler for method: {method}")
+            logger.debug(f"🎯 Calling handler for method: {method}")
             
-            # Set appropriate timeout based on method type
+            # Dify-specific timeout adjustments
             handler_timeout = 10  # Default timeout
+            if client_info.get('name', '').startswith('Dify'):
+                # Dify might have stricter timeout expectations
+                handler_timeout = 15  # Slightly longer for Dify
+                
             if method == "tools/call":
-                handler_timeout = 120  # Extended timeout for tool calls
+                handler_timeout = 30 if client_info.get('name', '').startswith('Dify') else 120
             elif method in ["initialize", "tools/list", "resources/list", "prompts/list"]:
-                handler_timeout = 30  # Medium timeout for initialization
+                handler_timeout = 10 if client_info.get('name', '').startswith('Dify') else 30
             
             result = await asyncio.wait_for(
                 handler(message.get('params', {}), session),
                 timeout=handler_timeout
             )
-            logger.info(f"✅ Handler completed for method: {method}")
             
-            # Handle initialization
+            logger.debug(f"✅ Handler completed for method: {method}")
+            
+            # Success logging for specific clients (condensed)
+            if client_info.get('name', '').startswith('Dify'):
+                logger.debug(f"🎯 DIFY SUCCESS: {method}")
+            
+            # Handle initialization - mark as initialized immediately for better client compatibility
             if method == "initialize":
-                session.initialized = False  # Will be set to True when initialized notification is received
+                # Store client info and mark as initialized
                 session.client_info = message.get('params', {}).get('clientInfo', {})
+                session.initialized = True  # Mark as initialized immediately to prevent client disconnection
+                logger.info(f"✅ Session {session.session_id} marked as initialized for {session.client_info.get('name', 'unknown')}")
             
-            return {
+            success_response = {
                 "jsonrpc": "2.0",
                 "result": result,
                 "id": message.get('id')
             }
             
+            # Enhanced logging for successful responses (condensed for production)
+            if client_info.get('name', '').startswith('Dify'):
+                logger.debug(f"🎯 DIFY RESPONSE: {method} completed successfully")
+                
+            return success_response
+            
         except asyncio.TimeoutError:
             timeout_msg = f"Handler timeout for {method} after {handler_timeout}s"
             logger.error(timeout_msg)
-            return {
+            error_response = {
                 "jsonrpc": "2.0",
                 "error": {"code": -32000, "message": timeout_msg},  # Server error code
                 "id": message.get('id')
             }
+            if client_info.get('name', '').startswith('Dify'):
+                logger.error(f"💥 DIFY TIMEOUT: {timeout_msg}")
+            return error_response
         except ValueError as ve:
             # Parameter validation errors - use Invalid params code
             logger.error(f"Parameter validation error for {method}: {ve}")
-            return {
+            error_response = {
                 "jsonrpc": "2.0",
                 "error": {"code": -32602, "message": f"Invalid params: {str(ve)}"},
                 "id": message.get('id')
             }
+            if client_info.get('name', '').startswith('Dify'):
+                logger.error(f"💥 DIFY PARAMS ERROR: {ve}")
+            return error_response
         except Exception as e:
             logger.error(f"Handler error for {method}: {e}")
-            return {
+            error_response = {
                 "jsonrpc": "2.0",
                 "error": {"code": -32603, "message": str(e)},  # Internal error code
                 "id": message.get('id')
             }
+            if client_info.get('name', '').startswith('Dify'):
+                logger.error(f"💥 DIFY HANDLER ERROR: {e}")
+                import traceback
+                logger.error(f"💥 DIFY STACK TRACE: {traceback.format_exc()}")
+            return error_response
     
     async def _handle_post(self, request: web.Request) -> web.Response:
         """Handle HTTP POST requests (client sends message)"""
@@ -220,11 +261,13 @@ class StreamableHTTPTransport:
         if not self._validate_origin(request):
             raise web.HTTPForbidden(text="Invalid origin")
         
-        # Check protocol version - MCP 2025-06-18 specification compliance
+        # Check protocol version - Support multiple versions for client compatibility
         protocol_version = request.headers.get('MCP-Protocol-Version', '2025-06-18')
-        if protocol_version != '2025-06-18':
+        supported_versions = ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]
+        
+        if protocol_version not in supported_versions:
             raise web.HTTPBadRequest(
-                text=f"Unsupported protocol version: {protocol_version}. Only 2025-06-18 is supported."
+                text=f"Unsupported protocol version: {protocol_version}. Supported: {', '.join(supported_versions)}"
             )
         
         # Get or create session
@@ -248,12 +291,21 @@ class StreamableHTTPTransport:
                     if user_id:
                         session.client_info = session.client_info or {}
                         session.client_info['user_id'] = user_id
-                elif session_id:
-                    # For other methods with session_id, session must exist
-                    raise web.HTTPNotFound(text="Session not found")
                 else:
-                    # For other methods without session_id, require session
-                    raise web.HTTPBadRequest(text="Session required")
+                    # For other methods, try to find existing session or create one if needed
+                    if session_id:
+                        # Client provided session_id but session not found
+                        # This is normal after server restarts or session timeouts
+                        logger.debug(f"Session {session_id} not found, creating new one (likely server restart or timeout)")
+                        session = self._create_session(session_id)
+                    else:
+                        # No session_id provided - create new session for backward compatibility
+                        logger.debug(f"Creating new session for method: {body.get('method')} (no session_id provided)")
+                        session = self._create_session()
+                    
+                    if user_id:
+                        session.client_info = session.client_info or {}
+                        session.client_info['user_id'] = user_id
             
             # Check if client supports SSE
             accept_header = request.headers.get('Accept', '')
@@ -273,8 +325,34 @@ class StreamableHTTPTransport:
             
             # Handle different message types
             if message_type in ['response', 'notification']:
-                # For responses and notifications, return 202 Accepted
-                # TODO: Process the message appropriately
+                # Process notifications properly - especially 'initialized'
+                method = body.get('method')
+                
+                # Handle critical 'initialized' notification per MCP 2025-06-18 spec
+                if method == 'notifications/initialized' or method == 'initialized':
+                    logger.info(f"🎯 Processing MCP initialized notification for session {session.session_id}")
+                    
+                    # Call the initialized handler to complete the handshake
+                    # Try both possible handler names
+                    handler = self.message_handlers.get('notifications/initialized') or self.message_handlers.get('initialized')
+                    if handler and session:
+                        try:
+                            await handler(body.get('params', {}), session)
+                            logger.info(f"✅ MCP handshake completed for session {session.session_id}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to process initialized notification: {e}")
+                    else:
+                        logger.warning(f"⚠️ No initialized handler found (checked: notifications/initialized, initialized)")
+                        # Log available handlers for debugging
+                        available_handlers = list(self.message_handlers.keys())
+                        logger.debug(f"🔍 Available handlers: {available_handlers}")
+                
+                
+                # Log other notifications for debugging
+                elif method:
+                    logger.info(f"📨 Received notification: {method}")
+                
+                # Return 202 Accepted for all notifications (as per JSON-RPC spec)
                 return web.Response(status=202)
             
             elif message_type == 'request':
@@ -300,20 +378,31 @@ class StreamableHTTPTransport:
                 prefer_json_for_simple_requests = body.get('method') in ['initialize', 'tools/list', 'resources/list', 'prompts/list', 'tools/call']
                 
                 if supports_json and (not supports_sse or prefer_json_for_simple_requests):
-                    # Return JSON response
-                    headers = {}
+                    # Return JSON response with connection persistence headers
+                    headers = {
+                        'Connection': 'keep-alive',  # Encourage connection reuse
+                        'Keep-Alive': 'timeout=300, max=100'  # 5 minute timeout, 100 requests max
+                    }
                     if body.get('method') == 'initialize':
                         headers['Mcp-Session-Id'] = session.session_id
+                        # Add session validation info for client confidence
+                        headers['Mcp-Session-Status'] = 'active'
+                        headers['Mcp-Session-Capabilities'] = 'tools,resources,prompts,logging'
                     
                     return web.json_response(response, headers=headers)
                 elif supports_sse and 'error' not in response:
                     # Start SSE stream for streaming responses
                     return await self._start_sse_stream(request, session, response)
                 else:
-                    # Fallback to JSON if no suitable format
-                    headers = {}
+                    # Fallback to JSON if no suitable format with persistence headers
+                    headers = {
+                        'Connection': 'keep-alive',
+                        'Keep-Alive': 'timeout=300, max=100'
+                    }
                     if body.get('method') == 'initialize':
                         headers['Mcp-Session-Id'] = session.session_id
+                        headers['Mcp-Session-Status'] = 'active'
+                        headers['Mcp-Session-Capabilities'] = 'tools,resources,prompts,logging'
                     
                     return web.json_response(response, headers=headers)
             
@@ -594,7 +683,7 @@ class StreamableHTTPTransport:
         
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, Accept, MCP-Protocol-Version, Mcp-Session-Id, Last-Event-ID, X-User-Id'
-        response.headers['Access-Control-Expose-Headers'] = 'Mcp-Session-Id'
+        response.headers['Access-Control-Expose-Headers'] = 'Mcp-Session-Id, Mcp-Session-Status, Mcp-Session-Capabilities'
         response.headers['Access-Control-Max-Age'] = '86400'
         
         return response
