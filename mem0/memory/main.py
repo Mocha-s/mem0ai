@@ -5,11 +5,12 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 import warnings
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pytz
 from pydantic import ValidationError
@@ -26,17 +27,28 @@ from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import capture_event
 from mem0.memory.utils import (
     get_fact_retrieval_messages,
+    get_enhanced_fact_retrieval_messages,
+    generate_categories_for_memory,
     parse_messages,
     parse_vision_messages,
     process_telemetry_filters,
     remove_code_blocks,
 )
-from mem0.utils.factory import (
-    EmbedderFactory,
-    GraphStoreFactory,
-    LlmFactory,
-    VectorStoreFactory,
-)
+from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
+
+# Import advanced retrieval for enhanced search capabilities
+try:
+    from mem0.retrieval import AdvancedRetrieval
+except ImportError:
+    AdvancedRetrieval = None
+    logging.warning("AdvancedRetrieval not available. Advanced search features will be disabled.")
+
+# Import performance monitoring
+try:
+    from mem0.retrieval.performance import PerformanceMonitor
+except ImportError:
+    PerformanceMonitor = None
+    logging.warning("PerformanceMonitor not available. Performance monitoring will be disabled.")
 
 
 def _build_filters_and_metadata(
@@ -138,14 +150,9 @@ class Memory(MemoryBase):
         self.collection_name = self.config.vector_store.config.collection_name
         self.api_version = self.config.version
 
-        self.enable_graph = False
+        # Graph store initialization is now handled dynamically per request
+        self.graph = None
 
-        if self.config.graph_store.config:
-            provider = self.config.graph_store.provider
-            self.graph = GraphStoreFactory.create(provider, self.config)
-            self.enable_graph = True
-        else:
-            self.graph = None
         self.config.vector_store.config.collection_name = "mem0migrations"
         if self.config.vector_store.provider in ["faiss", "qdrant"]:
             provider_path = f"migrations_{self.config.vector_store.provider}"
@@ -154,6 +161,12 @@ class Memory(MemoryBase):
         self._telemetry_vector_store = VectorStoreFactory.create(
             self.config.vector_store.provider, self.config.vector_store.config
         )
+
+        # Initialize performance optimization features
+        self._contextual_history_cache = {}  # Cache for historical messages
+        self._cache_max_size = 100  # Maximum cache entries
+        self._cache_ttl = 300  # Cache TTL in seconds (5 minutes)
+
         capture_event("mem0.init", self, {"sync_type": "sync"})
 
     @classmethod
@@ -189,9 +202,15 @@ class Memory(MemoryBase):
         agent_id: Optional[str] = None,
         run_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
         infer: bool = True,
         memory_type: Optional[str] = None,
         prompt: Optional[str] = None,
+        version: Optional[str] = "v1",
+        includes: Optional[str] = None,
+        excludes: Optional[str] = None,
+        timestamp: Optional[int] = None,
+        enable_graph: bool = False,
     ):
         """
         Create a new memory.
@@ -214,7 +233,15 @@ class Memory(MemoryBase):
                 creating procedural memories (typically requires 'agent_id'). Otherwise, memories
                 are treated as general conversational/factual memories.memory_type (str, optional): Type of memory to create. Defaults to None. By default, it creates the short term memories and long term (semantic and episodic) memories. Pass "procedural_memory" to create procedural memories.
             prompt (str, optional): Prompt to use for the memory creation. Defaults to None.
-
+            version (str, optional): API version for memory creation. "v1" (default) for standard
+                behavior, "v2" for contextual add with automatic history retrieval. Defaults to "v1".
+            includes (str, optional): Include only specific types of memories. When provided, only
+                information related to this topic will be extracted and stored. Defaults to None.
+            excludes (str, optional): Exclude specific types of memories. When provided, information
+                related to this topic will be ignored during extraction. Defaults to None.
+            enable_graph (bool, optional): Enable graph-based relationship extraction and storage.
+                When True, entities and relationships from messages will be extracted and stored
+                in the graph store for relationship queries. Defaults to False.
 
         Returns:
             dict: A dictionary containing the result of the memory addition operation, typically
@@ -229,6 +256,61 @@ class Memory(MemoryBase):
             run_id=run_id,
             input_metadata=metadata,
         )
+
+        # Validate version parameter
+        if version not in ["v1", "v2"]:
+            raise ValueError(f"Invalid version '{version}'. Supported versions: v1, v2")
+
+        # Add version information to metadata for storage
+        processed_metadata["api_version"] = version
+        if version == "v2":
+            # Store original messages for v2 contextual add
+            processed_metadata["original_messages"] = messages
+
+        # Version-specific processing
+        if version == "v2":
+            # Start performance monitoring for v2 processing
+            v2_start_time = time.time() if PerformanceMonitor else None
+
+            try:
+                # Implement v2 contextual add logic
+                import logging
+                logging.info("Processing v2 contextual add with automatic history retrieval")
+
+                # Retrieve historical context
+                historical_messages = self._retrieve_contextual_history(effective_filters, limit=10)
+
+                # Merge historical context with new messages
+                contextualized_messages = self._merge_historical_context(historical_messages, messages)
+
+                # Use the merged messages for processing instead of original messages
+                messages = contextualized_messages
+
+                # Add telemetry event for v2 processing
+                capture_event("mem0.contextual_add_v2", self, {
+                    "historical_count": len(historical_messages),
+                    "new_count": len(processed_metadata.get("original_messages", [])),
+                    "merged_count": len(contextualized_messages),
+                    "sync_type": "sync"
+                })
+
+                logging.info(f"v2 contextual add: merged {len(historical_messages)} historical + {len(processed_metadata.get('original_messages', []))} new messages into {len(contextualized_messages)} total messages")
+
+                # Log v2 processing performance
+                if PerformanceMonitor and v2_start_time:
+                    v2_elapsed_ms = (time.time() - v2_start_time) * 1000
+                    if v2_elapsed_ms > 800:  # Target: <800ms
+                        logging.warning(f"v2 contextual add exceeded target: {v2_elapsed_ms:.2f}ms > 800ms")
+                    else:
+                        logging.info(f"v2 contextual add completed in {v2_elapsed_ms:.2f}ms")
+
+            except Exception as e:
+                # Graceful degradation: fall back to v1 behavior on error
+                logging.warning(f"v2 contextual add failed, falling back to v1 behavior: {e}")
+                capture_event("mem0.contextual_add_v2_fallback", self, {
+                    "error": str(e),
+                    "sync_type": "sync"
+                })
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
             raise ValueError(
@@ -245,7 +327,7 @@ class Memory(MemoryBase):
             raise ValueError("messages must be str, dict, or list[dict]")
 
         if agent_id is not None and memory_type == MemoryType.PROCEDURAL.value:
-            results = self._create_procedural_memory(messages, metadata=processed_metadata, prompt=prompt)
+            results = self._create_procedural_memory(messages, metadata=processed_metadata, prompt=prompt, timestamp=timestamp)
             return results
 
         if self.config.llm.config.get("enable_vision"):
@@ -254,8 +336,8 @@ class Memory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer)
-            future2 = executor.submit(self._add_to_graph, messages, effective_filters)
+            future1 = executor.submit(self._add_to_vector_store, messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp, custom_categories)
+            future2 = executor.submit(self._add_to_graph, messages, effective_filters, enable_graph)
 
             concurrent.futures.wait([future1, future2])
 
@@ -272,7 +354,8 @@ class Memory(MemoryBase):
             )
             return vector_store_result
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_result is not None:
             return {
                 "results": vector_store_result,
                 "relations": graph_result,
@@ -280,7 +363,7 @@ class Memory(MemoryBase):
 
         return {"results": vector_store_result}
 
-    def _add_to_vector_store(self, messages, metadata, filters, infer):
+    def _add_to_vector_store(self, messages, metadata, filters, infer, includes=None, excludes=None, timestamp=None, custom_categories=None):
         if not infer:
             returned_memories = []
             for message_dict in messages:
@@ -304,7 +387,7 @@ class Memory(MemoryBase):
 
                 msg_content = message_dict["content"]
                 msg_embeddings = self.embedding_model.embed(msg_content, "add")
-                mem_id = self._create_memory(msg_content, msg_embeddings, per_msg_meta)
+                mem_id = self._create_memory(msg_content, msg_embeddings, per_msg_meta, timestamp)
 
                 returned_memories.append(
                     {
@@ -319,11 +402,12 @@ class Memory(MemoryBase):
 
         parsed_messages = parse_messages(messages)
 
+        # Use enhanced fact retrieval with categories support
         if self.config.custom_fact_extraction_prompt:
             system_prompt = self.config.custom_fact_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages)
+            system_prompt, user_prompt = get_enhanced_fact_retrieval_messages(parsed_messages, includes, excludes)
 
         response = self.llm.generate_response(
             messages=[
@@ -335,10 +419,13 @@ class Memory(MemoryBase):
 
         try:
             response = remove_code_blocks(response)
-            new_retrieved_facts = json.loads(response)["facts"]
+            response_data = json.loads(response)
+            new_retrieved_facts = response_data.get("facts", [])
+            extracted_categories = response_data.get("categories", [])
         except Exception as e:
             logger.error(f"Error in new_retrieved_facts: {e}")
             new_retrieved_facts = []
+            extracted_categories = []
 
         if not new_retrieved_facts:
             logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
@@ -408,8 +495,27 @@ class Memory(MemoryBase):
                             data=action_text,
                             existing_embeddings=new_message_embeddings,
                             metadata=deepcopy(metadata),
+                            timestamp=timestamp,
                         )
-                        returned_memories.append({"id": memory_id, "memory": action_text, "event": event_type})
+                        
+                        # Generate categories for the new memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, custom_categories)
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, None)
+                        
+                        returned_memories.append({
+                            "id": memory_id, 
+                            "memory": action_text, 
+                            "event": event_type,
+                            "categories": memory_categories
+                        })
                     elif event_type == "UPDATE":
                         self._update_memory(
                             memory_id=temp_uuid_mapping[resp.get("id")],
@@ -417,12 +523,26 @@ class Memory(MemoryBase):
                             existing_embeddings=new_message_embeddings,
                             metadata=deepcopy(metadata),
                         )
+                        
+                        # Generate categories for the updated memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, custom_categories)
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = generate_categories_for_memory(action_text, self.llm, None)
+                        
                         returned_memories.append(
                             {
                                 "id": temp_uuid_mapping[resp.get("id")],
                                 "memory": action_text,
                                 "event": event_type,
                                 "previous_memory": resp.get("old_memory"),
+                                "categories": memory_categories
                             }
                         )
                     elif event_type == "DELETE":
@@ -432,6 +552,7 @@ class Memory(MemoryBase):
                                 "id": temp_uuid_mapping[resp.get("id")],
                                 "memory": action_text,
                                 "event": event_type,
+                                "categories": []  # Empty categories for deleted memories
                             }
                         )
                     elif event_type == "NONE":
@@ -449,14 +570,28 @@ class Memory(MemoryBase):
         )
         return returned_memories
 
-    def _add_to_graph(self, messages, filters):
+    def _add_to_graph(self, messages, filters, enable_graph=False):
         added_entities = []
-        if self.enable_graph:
-            if filters.get("user_id") is None:
-                filters["user_id"] = "user"
+        # Check if graph functionality is requested and graph store is configured
+        if enable_graph and self.config.graph_store.config:
+            # Initialize graph store if not already done
+            if not hasattr(self, 'graph') or self.graph is None:
+                try:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize graph store: {e}")
+                    return added_entities
+            
+            try:
+                if filters.get("user_id") is None:
+                    filters["user_id"] = "user"
 
-            data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
-            added_entities = self.graph.add(data, filters)
+                data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
+                added_entities = self.graph.add(data, filters)
+            except Exception as e:
+                logger.warning(f"Graph add operation failed, continuing without graph: {e}")
+                # Return empty list but don't raise exception to allow memory addition to continue
 
         return added_entities
 
@@ -501,6 +636,9 @@ class Memory(MemoryBase):
         if additional_metadata:
             result_item["metadata"] = additional_metadata
 
+        # Add categories to the result
+        result_item["categories"] = self.get_memory_categories(memory_id)
+
         return result_item
 
     def get_all(
@@ -511,6 +649,7 @@ class Memory(MemoryBase):
         run_id: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         limit: int = 100,
+        enable_graph: bool = False,
     ):
         """
         List all memories.
@@ -523,6 +662,9 @@ class Memory(MemoryBase):
                 These are merged with the ID-based scoping filters. For example,
                 `filters={"actor_id": "some_user"}`.
             limit (int, optional): The maximum number of memories to return. Defaults to 100.
+            enable_graph (bool, optional): Include graph-based entity relationships in results.
+                When True, returns related entities and relationships from graph store.
+                Defaults to False.
 
         Returns:
             dict: A dictionary containing a list of memories under the "results" key,
@@ -546,7 +688,7 @@ class Memory(MemoryBase):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_memories = executor.submit(self._get_all_from_vector_store, effective_filters, limit)
             future_graph_entities = (
-                executor.submit(self.graph.get_all, effective_filters, limit) if self.enable_graph else None
+                executor.submit(self._get_all_from_graph_store, effective_filters, limit, enable_graph) if enable_graph else None
             )
 
             concurrent.futures.wait(
@@ -556,7 +698,8 @@ class Memory(MemoryBase):
             all_memories_result = future_memories.result()
             graph_entities_result = future_graph_entities.result() if future_graph_entities else None
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_entities_result is not None:
             return {"results": all_memories_result, "relations": graph_entities_result}
 
         if self.api_version == "v1.0":
@@ -570,6 +713,26 @@ class Memory(MemoryBase):
             return all_memories_result
         else:
             return {"results": all_memories_result}
+
+    def _get_all_from_graph_store(self, filters, limit, enable_graph=False):
+        """Get all entities from graph store if enabled."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return self.graph.get_all(filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph get_all failed: {e}")
+            return None
 
     def _get_all_from_vector_store(self, filters, limit):
         memories_result = self.vector_store.list(filters=filters, limit=limit)
@@ -606,6 +769,9 @@ class Memory(MemoryBase):
             if additional_metadata:
                 memory_item_dict["metadata"] = additional_metadata
 
+            # Add categories to each memory
+            memory_item_dict["categories"] = self.get_memory_categories(mem.id)
+
             formatted_memories.append(memory_item_dict)
 
         return formatted_memories
@@ -620,6 +786,11 @@ class Memory(MemoryBase):
         limit: int = 100,
         filters: Optional[Dict[str, Any]] = None,
         threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
+        enable_graph: bool = False,
     ):
         """
         Searches for memories based on a query
@@ -631,6 +802,12 @@ class Memory(MemoryBase):
             limit (int, optional): Limit the number of results. Defaults to 100.
             filters (dict, optional): Filters to apply to the search. Defaults to None..
             threshold (float, optional): Minimum score for a memory to be included in the results. Defaults to None.
+            keyword_search (bool, optional): Enable BM25 keyword search for enhanced recall. Defaults to False.
+            rerank (bool, optional): Enable LLM-based reranking for improved relevance. Defaults to False.
+            filter_memories (bool, optional): Enable intelligent memory filtering for higher precision. Defaults to False.
+            enable_graph (bool, optional): Enable graph-based relationship search for enhanced context.
+                When True, performs graph traversal to find related entities and relationships.
+                Defaults to False.
 
         Returns:
             dict: A dictionary containing the search results, typically under a "results" key,
@@ -659,9 +836,12 @@ class Memory(MemoryBase):
         )
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_memories = executor.submit(self._search_vector_store, query, effective_filters, limit, threshold)
+            future_memories = executor.submit(
+                self._search_vector_store, query, effective_filters, limit, threshold,
+                keyword_search, rerank, filter_memories, retrieval_criteria
+            )
             future_graph_entities = (
-                executor.submit(self.graph.search, query, effective_filters, limit) if self.enable_graph else None
+                executor.submit(self._search_graph_store, query, effective_filters, limit, enable_graph) if enable_graph else None
             )
 
             concurrent.futures.wait(
@@ -671,7 +851,8 @@ class Memory(MemoryBase):
             original_memories = future_memories.result()
             graph_entities = future_graph_entities.result() if future_graph_entities else None
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_entities is not None:
             return {"results": original_memories, "relations": graph_entities}
 
         if self.api_version == "v1.0":
@@ -686,7 +867,37 @@ class Memory(MemoryBase):
         else:
             return {"results": original_memories}
 
-    def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
+    def _search_graph_store(self, query, filters, limit, enable_graph=False):
+        """Search graph store for related entities and relationships."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return self.graph.search(query, filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph search failed: {e}")
+            return None
+
+    def _search_vector_store(
+        self,
+        query,
+        filters,
+        limit,
+        threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None
+    ):
         embeddings = self.embedding_model.embed(query, "search")
         memories = self.vector_store.search(query=query, vectors=embeddings, limit=limit, filters=filters)
 
@@ -719,31 +930,63 @@ class Memory(MemoryBase):
             if additional_metadata:
                 memory_item_dict["metadata"] = additional_metadata
 
+            # Add categories to search results
+            memory_item_dict["categories"] = self.get_memory_categories(mem.id)
+
             if threshold is None or mem.score >= threshold:
                 original_memories.append(memory_item_dict)
 
+        # Check if criteria scoring should be enabled
+        criteria_scoring = bool(retrieval_criteria)
+
+        # Apply advanced retrieval if any advanced features are enabled
+        if (keyword_search or rerank or filter_memories or criteria_scoring) and AdvancedRetrieval is not None:
+            try:
+                # Get LLM config if available
+                llm_config = {}
+                if hasattr(self, 'llm') and self.llm:
+                    llm_config = getattr(self.llm, 'config', {})
+
+                # Initialize advanced retrieval
+                advanced_retrieval = AdvancedRetrieval(llm_config)
+
+                # Run advanced retrieval synchronously
+                import asyncio
+                try:
+                    # Create a new event loop for async operations
+                    enhanced_memories = asyncio.run(advanced_retrieval.search(
+                        query, original_memories, keyword_search, rerank, filter_memories,
+                        criteria_scoring, retrieval_criteria,
+                        threshold=threshold, limit=limit
+                    ))
+                    return enhanced_memories
+                except Exception as e:
+                    logging.warning(f"Advanced retrieval failed: {str(e)}, using original results")
+                    return original_memories
+
+            except Exception as e:
+                logging.error(f"Error in advanced retrieval: {str(e)}")
+                return original_memories
+
         return original_memories
 
-    def update(self, memory_id, data):
+    def update(self, memory_id, data, metadata=None):
         """
         Update a memory by ID.
 
         Args:
             memory_id (str): ID of the memory to update.
-            data (str): New content to update the memory with.
+            data (str): Text data to update the memory with.
+            metadata (dict, optional): Metadata to update the memory with.
 
         Returns:
-            dict: Success message indicating the memory was updated.
-
-        Example:
-            >>> m.update(memory_id="mem_123", data="Likes to play tennis on weekends")
-            {'message': 'Memory updated successfully!'}
+            dict: Updated memory.
         """
         capture_event("mem0.update", self, {"memory_id": memory_id, "sync_type": "sync"})
 
         existing_embeddings = {data: self.embedding_model.embed(data, "update")}
 
-        self._update_memory(memory_id, data, existing_embeddings)
+        self._update_memory(memory_id, data, existing_embeddings, metadata)
         return {"message": "Memory updated successfully!"}
 
     def delete(self, memory_id):
@@ -757,7 +1000,7 @@ class Memory(MemoryBase):
         self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
-    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None):
+    def delete_all(self, user_id: Optional[str] = None, agent_id: Optional[str] = None, run_id: Optional[str] = None, enable_graph: bool = False):
         """
         Delete all memories.
 
@@ -787,8 +1030,15 @@ class Memory(MemoryBase):
 
         logger.info(f"Deleted {len(memories)} memories")
 
-        if self.enable_graph:
-            self.graph.delete_all(filters)
+        if enable_graph and self.config.graph_store.config:
+            try:
+                # Initialize graph store if not already done
+                if not hasattr(self, 'graph') or self.graph is None:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                self.graph.delete_all(filters)
+            except Exception as e:
+                logger.warning(f"Graph delete_all operation failed: {e}")
 
         return {"message": "Memories deleted successfully!"}
 
@@ -805,7 +1055,7 @@ class Memory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "sync"})
         return self.db.get_history(memory_id)
 
-    def _create_memory(self, data, existing_embeddings, metadata=None):
+    def _create_memory(self, data, existing_embeddings, metadata=None, timestamp=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
             embeddings = existing_embeddings[data]
@@ -815,7 +1065,14 @@ class Memory(MemoryBase):
         metadata = metadata or {}
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        metadata["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+
+        # Use custom timestamp if provided, otherwise use current UTC time
+        if timestamp is not None:
+            from mem0.utils.timestamp import convert_timestamp_to_utc_datetime, format_timestamp_for_storage
+            dt = convert_timestamp_to_utc_datetime(timestamp)
+            metadata["created_at"] = format_timestamp_for_storage(dt)
+        else:
+            metadata["created_at"] = datetime.now(pytz.UTC).isoformat()
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -831,10 +1088,223 @@ class Memory(MemoryBase):
             actor_id=metadata.get("actor_id"),
             role=metadata.get("role"),
         )
+        
+        # Auto-categorize the memory after creation
+        self._auto_categorize_memory(memory_id, data, metadata)
+        
         capture_event("mem0._create_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
         return memory_id
 
-    def _create_procedural_memory(self, messages, metadata=None, prompt=None):
+    def _auto_categorize_memory(self, memory_id, data, metadata):
+        """Automatically categorize a memory using LLM"""
+        try:
+            # Extract custom_categories from metadata if available
+            custom_categories = metadata.get("custom_categories")
+            
+            # Generate categories for this memory
+            categories = generate_categories_for_memory(data, self.llm, custom_categories)
+            
+            if categories:
+                # Store categories in database
+                self.db.assign_memory_categories(memory_id, categories)
+                logger.info(f"Assigned categories to memory {memory_id}: {categories}")
+        except Exception as e:
+            logger.error(f"Error auto-categorizing memory {memory_id}: {e}")
+
+    def get_memory_categories(self, memory_id):
+        """Get categories for a specific memory"""
+        return self.db.get_memory_categories(memory_id)
+
+    def get_all_categories(self):
+        """Get all available categories with usage statistics"""
+        return self.db.get_all_categories()
+
+    def search_by_categories(self, category_names, limit=None):
+        """Search memories by categories"""
+        memory_ids = self.db.get_memories_by_categories(category_names, limit)
+        memories = []
+        for memory_id in memory_ids:
+            memory = self.get(memory_id)
+            if memory:
+                memory["categories"] = self.get_memory_categories(memory_id)
+                memories.append(memory)
+        return memories
+
+    def _retrieve_contextual_history(self, filters, limit=10):
+        """
+        Retrieve historical messages for contextual add v2.
+
+        Args:
+            filters (dict): Filters to apply for retrieving historical memories
+            limit (int): Maximum number of historical conversations to retrieve (default: 10)
+
+        Returns:
+            list: List of historical messages in chronological order
+        """
+        # Apply performance monitoring if available
+        if PerformanceMonitor:
+            start_time = time.time()
+
+        # Check cache first for performance optimization
+        cache_key = f"{filters.get('user_id', '')}_{filters.get('run_id', '')}_{limit}"
+        current_time = time.time()
+
+        if hasattr(self, '_contextual_history_cache') and cache_key in self._contextual_history_cache:
+            cached_data = self._contextual_history_cache[cache_key]
+            if current_time - cached_data['timestamp'] < self._cache_ttl:
+                logging.debug(f"Cache hit for contextual history: {cache_key}")
+                return cached_data['data']
+            else:
+                # Remove expired cache entry
+                del self._contextual_history_cache[cache_key]
+
+        try:
+            # Get historical memories using existing get_all functionality
+            historical_memories = self._get_all_from_vector_store(filters, limit=limit * 5)  # Get more to filter
+
+            # Extract original messages from v2 memories and sort by creation time
+            historical_messages = []
+            for memory in historical_memories:
+                # Check if this memory has original_messages (v2 data)
+                if "metadata" in memory and "original_messages" in memory["metadata"]:
+                    original_messages = memory["metadata"]["original_messages"]
+                    created_at = memory.get("created_at")
+
+                    # Add timestamp to each message for sorting
+                    for msg in original_messages:
+                        msg_with_timestamp = msg.copy()
+                        msg_with_timestamp["_created_at"] = created_at
+                        historical_messages.append(msg_with_timestamp)
+                elif "metadata" in memory and "api_version" in memory["metadata"] and memory["metadata"]["api_version"] == "v2":
+                    # v2 memory but no original_messages (edge case)
+                    continue
+                # Skip v1 memories as they don't have original_messages
+
+            # Sort by creation time (oldest first for chronological order)
+            historical_messages.sort(key=lambda x: x.get("_created_at", ""))
+
+            # Remove timestamp and limit to requested number of messages
+            result_messages = []
+            for msg in historical_messages[:limit * 2]:  # Allow some buffer for conversation pairs
+                clean_msg = {k: v for k, v in msg.items() if k != "_created_at"}
+                result_messages.append(clean_msg)
+
+            result = result_messages[:limit * 2]  # Return up to limit*2 messages (user+assistant pairs)
+
+            # Cache the result for future use
+            if hasattr(self, '_contextual_history_cache'):
+                # Implement simple LRU by removing oldest entries if cache is full
+                if len(self._contextual_history_cache) >= self._cache_max_size:
+                    oldest_key = min(self._contextual_history_cache.keys(),
+                                   key=lambda k: self._contextual_history_cache[k]['timestamp'])
+                    del self._contextual_history_cache[oldest_key]
+
+                self._contextual_history_cache[cache_key] = {
+                    'data': result,
+                    'timestamp': current_time
+                }
+                logging.debug(f"Cached contextual history for: {cache_key}")
+
+            # Log performance metrics
+            if PerformanceMonitor:
+                elapsed_ms = (time.time() - start_time) * 1000
+                if elapsed_ms > 500:  # Target: <500ms
+                    logging.warning(f"Contextual history retrieval exceeded target: {elapsed_ms:.2f}ms > 500ms")
+                else:
+                    logging.debug(f"Contextual history retrieval completed in {elapsed_ms:.2f}ms")
+
+            return result
+
+        except Exception as e:
+            logging.warning(f"Error retrieving contextual history: {e}")
+            return []
+
+    def _merge_historical_context(self, historical_messages, new_messages):
+        """
+        Merge historical messages with new messages to form complete conversation context.
+
+        Args:
+            historical_messages (list): List of historical messages from contextual history
+            new_messages (list): List of new messages to be added
+
+        Returns:
+            list: Merged and deduplicated messages in chronological order
+        """
+        try:
+            # Ensure both inputs are lists
+            if not isinstance(historical_messages, list):
+                historical_messages = []
+            if not isinstance(new_messages, list):
+                new_messages = []
+
+            # Create a set to track seen message content for deduplication
+            seen_messages = set()
+            merged_messages = []
+
+            # Helper function to create a unique key for message deduplication
+            def get_message_key(msg):
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    # Use role + content hash for deduplication
+                    content_hash = hash(str(msg["content"]).strip().lower())
+                    return f"{msg['role']}:{content_hash}"
+                return None
+
+            # Add historical messages first (they are already sorted chronologically)
+            for msg in historical_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Add new messages, avoiding duplicates
+            for msg in new_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Implement token length control (rough estimation)
+            # Assume average 4 characters per token, limit to ~8000 tokens (~32000 characters)
+            max_chars = 32000
+            total_chars = 0
+            final_messages = []
+
+            for msg in merged_messages:
+                msg_chars = len(str(msg.get("content", "")))
+                if total_chars + msg_chars <= max_chars:
+                    final_messages.append(msg)
+                    total_chars += msg_chars
+                else:
+                    # If we exceed the limit, stop adding more messages
+                    break
+
+            logging.info(f"Merged {len(historical_messages)} historical + {len(new_messages)} new messages into {len(final_messages)} unique messages")
+            return final_messages
+
+        except Exception as e:
+            logging.warning(f"Error merging historical context: {e}")
+            # Fallback to just new messages if merging fails
+            return new_messages
+
+    def _create_procedural_memory(self, messages, metadata=None, prompt=None, timestamp=None):
         """
         Create a procedural memory
 
@@ -865,7 +1335,7 @@ class Memory(MemoryBase):
 
         metadata["memory_type"] = MemoryType.PROCEDURAL.value
         embeddings = self.embedding_model.embed(procedural_memory, memory_action="add")
-        memory_id = self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata)
+        memory_id = self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata, timestamp=timestamp)
         capture_event("mem0._create_procedural_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
 
         result = {"results": [{"id": memory_id, "memory": procedural_memory, "event": "ADD"}]}
@@ -888,7 +1358,7 @@ class Memory(MemoryBase):
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
-        new_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        new_metadata["updated_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
 
         if "user_id" in existing_memory.payload:
             new_metadata["user_id"] = existing_memory.payload["user_id"]
@@ -923,6 +1393,10 @@ class Memory(MemoryBase):
             actor_id=new_metadata.get("actor_id"),
             role=new_metadata.get("role"),
         )
+        
+        # Re-categorize the memory after update
+        self._auto_categorize_memory(memory_id, data, new_metadata)
+        
         capture_event("mem0._update_memory", self, {"memory_id": memory_id, "sync_type": "sync"})
         return memory_id
 
@@ -930,6 +1404,10 @@ class Memory(MemoryBase):
         logger.info(f"Deleting memory with {memory_id=}")
         existing_memory = self.vector_store.get(vector_id=memory_id)
         prev_value = existing_memory.payload["data"]
+        
+        # Delete categories associations first
+        self.db.delete_memory_categories(memory_id)
+        
         self.vector_store.delete(vector_id=memory_id)
         self.db.add_history(
             memory_id,
@@ -989,23 +1467,13 @@ class AsyncMemory(MemoryBase):
         self.collection_name = self.config.vector_store.config.collection_name
         self.api_version = self.config.version
 
-        self.enable_graph = False
+        # Graph store initialization is now handled dynamically per request
+        self.graph = None
 
-        if self.config.graph_store.config:
-            provider = self.config.graph_store.provider
-            self.graph = GraphStoreFactory.create(provider, self.config)
-            self.enable_graph = True
-        else:
-            self.graph = None
-
-        self.config.vector_store.config.collection_name = "mem0migrations"
-        if self.config.vector_store.provider in ["faiss", "qdrant"]:
-            provider_path = f"migrations_{self.config.vector_store.provider}"
-            self.config.vector_store.config.path = os.path.join(mem0_dir, provider_path)
-            os.makedirs(self.config.vector_store.config.path, exist_ok=True)
-        self._telemetry_vector_store = VectorStoreFactory.create(
-            self.config.vector_store.provider, self.config.vector_store.config
-        )
+        # Initialize performance optimization features
+        self._contextual_history_cache = {}  # Cache for historical messages
+        self._cache_max_size = 100  # Maximum cache entries
+        self._cache_ttl = 300  # Cache TTL in seconds (5 minutes)
 
         capture_event("mem0.init", self, {"sync_type": "async"})
 
@@ -1042,10 +1510,16 @@ class AsyncMemory(MemoryBase):
         agent_id: Optional[str] = None,
         run_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
         infer: bool = True,
         memory_type: Optional[str] = None,
         prompt: Optional[str] = None,
         llm=None,
+        version: Optional[str] = "v1",
+        includes: Optional[str] = None,
+        excludes: Optional[str] = None,
+        timestamp: Optional[int] = None,
+        enable_graph: bool = False,
     ):
         """
         Create a new memory asynchronously.
@@ -1061,12 +1535,73 @@ class AsyncMemory(MemoryBase):
                                          Pass "procedural_memory" to create procedural memories.
             prompt (str, optional): Prompt to use for the memory creation. Defaults to None.
             llm (BaseChatModel, optional): LLM class to use for generating procedural memories. Defaults to None. Useful when user is using LangChain ChatModel.
+            version (str, optional): API version for memory creation. "v1" (default) for standard
+                behavior, "v2" for contextual add with automatic history retrieval. Defaults to "v1".
+            includes (str, optional): Include only specific types of memories. When provided, only
+                information related to this topic will be extracted and stored. Defaults to None.
+            excludes (str, optional): Exclude specific types of memories. When provided, information
+                related to this topic will be ignored during extraction. Defaults to None.
         Returns:
             dict: A dictionary containing the result of the memory addition operation.
         """
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id, agent_id=agent_id, run_id=run_id, input_metadata=metadata
         )
+
+        # Validate version parameter
+        if version not in ["v1", "v2"]:
+            raise ValueError(f"Invalid version '{version}'. Supported versions: v1, v2")
+
+        # Add version information to metadata for storage
+        processed_metadata["api_version"] = version
+        if version == "v2":
+            # Store original messages for v2 contextual add
+            processed_metadata["original_messages"] = messages
+
+        # Version-specific processing
+        if version == "v2":
+            # Start performance monitoring for v2 processing
+            v2_start_time = time.time() if PerformanceMonitor else None
+
+            try:
+                # Implement v2 contextual add logic
+                import logging
+                logging.info("Processing v2 contextual add with automatic history retrieval")
+
+                # Retrieve historical context
+                historical_messages = await self._retrieve_contextual_history(effective_filters, limit=10)
+
+                # Merge historical context with new messages
+                contextualized_messages = self._merge_historical_context(historical_messages, messages)
+
+                # Use the merged messages for processing instead of original messages
+                messages = contextualized_messages
+
+                # Add telemetry event for v2 processing
+                capture_event("mem0.contextual_add_v2", self, {
+                    "historical_count": len(historical_messages),
+                    "new_count": len(processed_metadata.get("original_messages", [])),
+                    "merged_count": len(contextualized_messages),
+                    "sync_type": "async"
+                })
+
+                logging.info(f"v2 contextual add: merged {len(historical_messages)} historical + {len(processed_metadata.get('original_messages', []))} new messages into {len(contextualized_messages)} total messages")
+
+                # Log v2 processing performance
+                if PerformanceMonitor and v2_start_time:
+                    v2_elapsed_ms = (time.time() - v2_start_time) * 1000
+                    if v2_elapsed_ms > 800:  # Target: <800ms
+                        logging.warning(f"Async v2 contextual add exceeded target: {v2_elapsed_ms:.2f}ms > 800ms")
+                    else:
+                        logging.info(f"Async v2 contextual add completed in {v2_elapsed_ms:.2f}ms")
+
+            except Exception as e:
+                # Graceful degradation: fall back to v1 behavior on error
+                logging.warning(f"v2 contextual add failed, falling back to v1 behavior: {e}")
+                capture_event("mem0.contextual_add_v2_fallback", self, {
+                    "error": str(e),
+                    "sync_type": "async"
+                })
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
             raise ValueError(
@@ -1084,7 +1619,7 @@ class AsyncMemory(MemoryBase):
 
         if agent_id is not None and memory_type == MemoryType.PROCEDURAL.value:
             results = await self._create_procedural_memory(
-                messages, metadata=processed_metadata, prompt=prompt, llm=llm
+                messages, metadata=processed_metadata, prompt=prompt, llm=llm, timestamp=timestamp
             )
             return results
 
@@ -1094,9 +1629,9 @@ class AsyncMemory(MemoryBase):
             messages = parse_vision_messages(messages)
 
         vector_store_task = asyncio.create_task(
-            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer)
+            self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, includes, excludes, timestamp, custom_categories)
         )
-        graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters))
+        graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters, enable_graph))
 
         vector_store_result, graph_result = await asyncio.gather(vector_store_task, graph_task)
 
@@ -1110,7 +1645,8 @@ class AsyncMemory(MemoryBase):
             )
             return vector_store_result
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_result is not None:
             return {
                 "results": vector_store_result,
                 "relations": graph_result,
@@ -1124,6 +1660,10 @@ class AsyncMemory(MemoryBase):
         metadata: dict,
         effective_filters: dict,
         infer: bool,
+        includes: Optional[str] = None,
+        excludes: Optional[str] = None,
+        timestamp: Optional[int] = None,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
     ):
         if not infer:
             returned_memories = []
@@ -1148,7 +1688,7 @@ class AsyncMemory(MemoryBase):
 
                 msg_content = message_dict["content"]
                 msg_embeddings = await asyncio.to_thread(self.embedding_model.embed, msg_content, "add")
-                mem_id = await self._create_memory(msg_content, msg_embeddings, per_msg_meta)
+                mem_id = await self._create_memory(msg_content, msg_embeddings, per_msg_meta, timestamp)
 
                 returned_memories.append(
                     {
@@ -1162,11 +1702,12 @@ class AsyncMemory(MemoryBase):
             return returned_memories
 
         parsed_messages = parse_messages(messages)
+        # Use enhanced fact retrieval with categories support
         if self.config.custom_fact_extraction_prompt:
             system_prompt = self.config.custom_fact_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages)
+            system_prompt, user_prompt = get_enhanced_fact_retrieval_messages(parsed_messages, includes, excludes)
 
         response = await asyncio.to_thread(
             self.llm.generate_response,
@@ -1175,10 +1716,13 @@ class AsyncMemory(MemoryBase):
         )
         try:
             response = remove_code_blocks(response)
-            new_retrieved_facts = json.loads(response)["facts"]
+            response_data = json.loads(response)
+            new_retrieved_facts = response_data.get("facts", [])
+            extracted_categories = response_data.get("categories", [])
         except Exception as e:
             logger.error(f"Error in new_retrieved_facts: {e}")
             new_retrieved_facts = []
+            extracted_categories = []
 
         if not new_retrieved_facts:
             logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
@@ -1232,8 +1776,6 @@ class AsyncMemory(MemoryBase):
             except Exception as e:
                 logger.error(f"Invalid JSON response: {e}")
                 new_memories_with_actions = {}
-        else:
-            new_memories_with_actions = {}
 
         returned_memories = []
         try:
@@ -1252,6 +1794,7 @@ class AsyncMemory(MemoryBase):
                                 data=action_text,
                                 existing_embeddings=new_message_embeddings,
                                 metadata=deepcopy(metadata),
+                                timestamp=timestamp,
                             )
                         )
                         memory_tasks.append((task, resp, "ADD", None))
@@ -1276,19 +1819,64 @@ class AsyncMemory(MemoryBase):
             for task, resp, event_type, mem_id in memory_tasks:
                 try:
                     result_id = await task
+                    action_text = resp.get("text")
+                    
                     if event_type == "ADD":
-                        returned_memories.append({"id": result_id, "memory": resp.get("text"), "event": event_type})
+                        # Generate categories for the new memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, custom_categories
+                            )
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, None
+                            )
+                        
+                        returned_memories.append({
+                            "id": result_id, 
+                            "memory": action_text, 
+                            "event": event_type,
+                            "categories": memory_categories
+                        })
                     elif event_type == "UPDATE":
+                        # Generate categories for the updated memory
+                        memory_categories = []
+                        if custom_categories:
+                            # Use custom categories if provided
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, custom_categories
+                            )
+                        elif extracted_categories:
+                            # Use categories extracted from the initial LLM call
+                            memory_categories = extracted_categories
+                        else:
+                            # Generate categories automatically using LLM
+                            memory_categories = await asyncio.to_thread(
+                                generate_categories_for_memory, action_text, self.llm, None
+                            )
+                        
                         returned_memories.append(
                             {
                                 "id": mem_id,
-                                "memory": resp.get("text"),
+                                "memory": action_text,
                                 "event": event_type,
                                 "previous_memory": resp.get("old_memory"),
+                                "categories": memory_categories
                             }
                         )
                     elif event_type == "DELETE":
-                        returned_memories.append({"id": mem_id, "memory": resp.get("text"), "event": event_type})
+                        returned_memories.append({
+                            "id": mem_id, 
+                            "memory": action_text, 
+                            "event": event_type,
+                            "categories": []  # Empty categories for deleted memories
+                        })
                 except Exception as e:
                     logger.error(f"Error awaiting memory task (async): {e}")
         except Exception as e:
@@ -1302,14 +1890,28 @@ class AsyncMemory(MemoryBase):
         )
         return returned_memories
 
-    async def _add_to_graph(self, messages, filters):
+    async def _add_to_graph(self, messages, filters, enable_graph=False):
         added_entities = []
-        if self.enable_graph:
-            if filters.get("user_id") is None:
-                filters["user_id"] = "user"
+        # Check if graph functionality is requested and graph store is configured
+        if enable_graph and self.config.graph_store.config:
+            # Initialize graph store if not already done
+            if not hasattr(self, 'graph') or self.graph is None:
+                try:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                except Exception as e:
+                    logger.warning(f"Failed to initialize graph store: {e}")
+                    return added_entities
+            
+            try:
+                if filters.get("user_id") is None:
+                    filters["user_id"] = "user"
 
-            data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
-            added_entities = await asyncio.to_thread(self.graph.add, data, filters)
+                data = "\n".join([msg["content"] for msg in messages if "content" in msg and msg["role"] != "system"])
+                added_entities = await asyncio.to_thread(self.graph.add, data, filters)
+            except Exception as e:
+                logger.warning(f"Graph add operation failed, continuing without graph: {e}")
+                # Return empty list but don't raise exception to allow memory addition to continue
 
         return added_entities
 
@@ -1364,6 +1966,7 @@ class AsyncMemory(MemoryBase):
         run_id: Optional[str] = None,
         filters: Optional[Dict[str, Any]] = None,
         limit: int = 100,
+        enable_graph: bool = False,
     ):
         """
         List all memories.
@@ -1376,6 +1979,9 @@ class AsyncMemory(MemoryBase):
                  These are merged with the ID-based scoping filters. For example,
                  `filters={"actor_id": "some_user"}`.
              limit (int, optional): The maximum number of memories to return. Defaults to 100.
+             enable_graph (bool, optional): Include graph-based entity relationships in results.
+                When True, returns related entities and relationships from graph store.
+                Defaults to False.
 
          Returns:
              dict: A dictionary containing a list of memories under the "results" key,
@@ -1389,33 +1995,29 @@ class AsyncMemory(MemoryBase):
         )
 
         if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id")):
-            raise ValueError(
-                "When 'conversation_id' is not provided (classic mode), "
-                "at least one of 'user_id', 'agent_id', or 'run_id' must be specified for get_all."
-            )
+            raise ValueError("At least one of 'user_id', 'agent_id', or 'run_id' must be specified.")
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
         capture_event(
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"}
         )
 
-        vector_store_task = asyncio.create_task(self._get_all_from_vector_store(effective_filters, limit))
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_memories = executor.submit(self._get_all_from_vector_store, effective_filters, limit)
+            future_graph_entities = (
+                executor.submit(self._get_all_from_graph_store, effective_filters, limit, enable_graph) if enable_graph else None
+            )
 
-        graph_task = None
-        if self.enable_graph:
-            graph_get_all = getattr(self.graph, "get_all", None)
-            if callable(graph_get_all):
-                if asyncio.iscoroutinefunction(graph_get_all):
-                    graph_task = asyncio.create_task(graph_get_all(effective_filters, limit))
-                else:
-                    graph_task = asyncio.create_task(asyncio.to_thread(graph_get_all, effective_filters, limit))
+            concurrent.futures.wait(
+                [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
+            )
 
-        results_dict = {}
-        if graph_task:
-            vector_store_result, graph_entities_result = await asyncio.gather(vector_store_task, graph_task)
-            results_dict.update({"results": vector_store_result, "relations": graph_entities_result})
-        else:
-            results_dict.update({"results": await vector_store_task})
+            all_memories_result = future_memories.result()
+            graph_entities_result = future_graph_entities.result() if future_graph_entities else None
+
+        # Return results with relations if graph result is available
+        if graph_entities_result is not None:
+            return {"results": all_memories_result, "relations": graph_entities_result}
 
         if self.api_version == "v1.0":
             warnings.warn(
@@ -1425,9 +2027,9 @@ class AsyncMemory(MemoryBase):
                 category=DeprecationWarning,
                 stacklevel=2,
             )
-            return results_dict["results"]
-
-        return results_dict
+            return all_memories_result
+        else:
+            return {"results": all_memories_result}
 
     async def _get_all_from_vector_store(self, filters, limit):
         memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, limit=limit)
@@ -1468,6 +2070,26 @@ class AsyncMemory(MemoryBase):
 
         return formatted_memories
 
+    async def _get_all_from_graph_store(self, filters, limit, enable_graph=False):
+        """Get all entities from graph store if enabled."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return await asyncio.to_thread(self.graph.get_all, filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph get_all failed: {e}")
+            return None
+
     async def search(
         self,
         query: str,
@@ -1478,6 +2100,11 @@ class AsyncMemory(MemoryBase):
         limit: int = 100,
         filters: Optional[Dict[str, Any]] = None,
         threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None,
+        enable_graph: bool = False,
     ):
         """
         Searches for memories based on a query
@@ -1489,6 +2116,12 @@ class AsyncMemory(MemoryBase):
             limit (int, optional): Limit the number of results. Defaults to 100.
             filters (dict, optional): Filters to apply to the search. Defaults to None.
             threshold (float, optional): Minimum score for a memory to be included in the results. Defaults to None.
+            keyword_search (bool, optional): Enable BM25 keyword search for enhanced recall. Defaults to False.
+            rerank (bool, optional): Enable LLM-based reranking for improved relevance. Defaults to False.
+            filter_memories (bool, optional): Enable intelligent memory filtering for higher precision. Defaults to False.
+            enable_graph (bool, optional): Enable graph-based relationship search for enhanced context.
+                When True, performs graph traversal to find related entities and relationships.
+                Defaults to False.
 
         Returns:
             dict: A dictionary containing the search results, typically under a "results" key,
@@ -1517,14 +2150,13 @@ class AsyncMemory(MemoryBase):
             },
         )
 
-        vector_store_task = asyncio.create_task(self._search_vector_store(query, effective_filters, limit, threshold))
+        vector_store_task = asyncio.create_task(
+            self._search_vector_store(query, effective_filters, limit, threshold, keyword_search, rerank, filter_memories, retrieval_criteria)
+        )
 
         graph_task = None
-        if self.enable_graph:
-            if hasattr(self.graph.search, "__await__"):  # Check if graph search is async
-                graph_task = asyncio.create_task(self.graph.search(query, effective_filters, limit))
-            else:
-                graph_task = asyncio.create_task(asyncio.to_thread(self.graph.search, query, effective_filters, limit))
+        if enable_graph:
+            graph_task = asyncio.create_task(self._search_graph_store(query, effective_filters, limit, enable_graph))
 
         if graph_task:
             original_memories, graph_entities = await asyncio.gather(vector_store_task, graph_task)
@@ -1532,7 +2164,8 @@ class AsyncMemory(MemoryBase):
             original_memories = await vector_store_task
             graph_entities = None
 
-        if self.enable_graph:
+        # Return results with relations if graph result is available
+        if graph_entities is not None:
             return {"results": original_memories, "relations": graph_entities}
 
         if self.api_version == "v1.0":
@@ -1547,7 +2180,17 @@ class AsyncMemory(MemoryBase):
         else:
             return {"results": original_memories}
 
-    async def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
+    async def _search_vector_store(
+        self,
+        query,
+        filters,
+        limit,
+        threshold: Optional[float] = None,
+        keyword_search: bool = False,
+        rerank: bool = False,
+        filter_memories: bool = False,
+        retrieval_criteria: Optional[List[Dict[str, Any]]] = None
+    ):
         embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
         memories = await asyncio.to_thread(
             self.vector_store.search, query=query, vectors=embeddings, limit=limit, filters=filters
@@ -1585,29 +2228,72 @@ class AsyncMemory(MemoryBase):
             if threshold is None or mem.score >= threshold:
                 original_memories.append(memory_item_dict)
 
+        # Check if criteria scoring should be enabled
+        criteria_scoring = bool(retrieval_criteria)
+
+        # Apply advanced retrieval if any advanced features are enabled
+        if (keyword_search or rerank or filter_memories or criteria_scoring) and AdvancedRetrieval is not None:
+            try:
+                # Get LLM config if available
+                llm_config = {}
+                if hasattr(self, 'llm') and self.llm:
+                    llm_config = getattr(self.llm, 'config', {})
+
+                # Initialize advanced retrieval
+                advanced_retrieval = AdvancedRetrieval(llm_config)
+
+                # Run advanced retrieval asynchronously
+                enhanced_memories = await advanced_retrieval.search(
+                    query, original_memories, keyword_search, rerank, filter_memories,
+                    criteria_scoring, retrieval_criteria,
+                    threshold=threshold, limit=limit
+                )
+                return enhanced_memories
+
+            except Exception as e:
+                logging.error(f"Error in advanced retrieval: {str(e)}")
+                return original_memories
+
         return original_memories
 
-    async def update(self, memory_id, data):
+    async def _search_graph_store(self, query, filters, limit, enable_graph=False):
+        """Search graph store for related entities and relationships."""
+        if not enable_graph or not self.config.graph_store.config:
+            return None
+            
+        # Initialize graph store if not already done
+        if not hasattr(self, 'graph') or self.graph is None:
+            try:
+                from mem0.memory.graph_memory import MemoryGraph
+                self.graph = MemoryGraph(self.config)
+            except Exception as e:
+                logger.warning(f"Failed to initialize graph store: {e}")
+                return None
+        
+        try:
+            return await asyncio.to_thread(self.graph.search, query, filters, limit)
+        except Exception as e:
+            logger.warning(f"Graph search failed: {e}")
+            return None
+
+    async def update(self, memory_id, data, metadata=None):
         """
         Update a memory by ID asynchronously.
 
         Args:
             memory_id (str): ID of the memory to update.
-            data (str): New content to update the memory with.
+            data (str): Text data to update the memory with.
+            metadata (dict, optional): Metadata to update the memory with.
 
         Returns:
-            dict: Success message indicating the memory was updated.
-
-        Example:
-            >>> await m.update(memory_id="mem_123", data="Likes to play tennis on weekends")
-            {'message': 'Memory updated successfully!'}
+            dict: Updated memory.
         """
         capture_event("mem0.update", self, {"memory_id": memory_id, "sync_type": "async"})
 
         embeddings = await asyncio.to_thread(self.embedding_model.embed, data, "update")
         existing_embeddings = {data: embeddings}
 
-        await self._update_memory(memory_id, data, existing_embeddings)
+        await self._update_memory(memory_id, data, existing_embeddings, metadata)
         return {"message": "Memory updated successfully!"}
 
     async def delete(self, memory_id):
@@ -1621,7 +2307,7 @@ class AsyncMemory(MemoryBase):
         await self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
-    async def delete_all(self, user_id=None, agent_id=None, run_id=None):
+    async def delete_all(self, user_id=None, agent_id=None, run_id=None, enable_graph: bool = False):
         """
         Delete all memories asynchronously.
 
@@ -1655,8 +2341,15 @@ class AsyncMemory(MemoryBase):
 
         logger.info(f"Deleted {len(memories[0])} memories")
 
-        if self.enable_graph:
-            await asyncio.to_thread(self.graph.delete_all, filters)
+        if enable_graph and self.config.graph_store.config:
+            try:
+                # Initialize graph store if not already done
+                if not hasattr(self, 'graph') or self.graph is None:
+                    from mem0.memory.graph_memory import MemoryGraph
+                    self.graph = MemoryGraph(self.config)
+                await asyncio.to_thread(self.graph.delete_all, filters)
+            except Exception as e:
+                logger.warning(f"Graph delete_all operation failed: {e}")
 
         return {"message": "Memories deleted successfully!"}
 
@@ -1673,7 +2366,7 @@ class AsyncMemory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "async"})
         return await asyncio.to_thread(self.db.get_history, memory_id)
 
-    async def _create_memory(self, data, existing_embeddings, metadata=None):
+    async def _create_memory(self, data, existing_embeddings, metadata=None, timestamp=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
             embeddings = existing_embeddings[data]
@@ -1684,7 +2377,14 @@ class AsyncMemory(MemoryBase):
         metadata = metadata or {}
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
-        metadata["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+
+        # Use custom timestamp if provided, otherwise use current UTC time
+        if timestamp is not None:
+            from mem0.utils.timestamp import convert_timestamp_to_utc_datetime, format_timestamp_for_storage
+            dt = convert_timestamp_to_utc_datetime(timestamp)
+            metadata["created_at"] = format_timestamp_for_storage(dt)
+        else:
+            metadata["created_at"] = datetime.now(pytz.UTC).isoformat()
 
         await asyncio.to_thread(
             self.vector_store.insert,
@@ -1707,7 +2407,183 @@ class AsyncMemory(MemoryBase):
         capture_event("mem0._create_memory", self, {"memory_id": memory_id, "sync_type": "async"})
         return memory_id
 
-    async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None):
+    async def _retrieve_contextual_history(self, filters, limit=10):
+        """
+        Retrieve historical messages for contextual add v2 asynchronously.
+
+        Args:
+            filters (dict): Filters to apply for retrieving historical memories
+            limit (int): Maximum number of historical conversations to retrieve (default: 10)
+
+        Returns:
+            list: List of historical messages in chronological order
+        """
+        # Apply performance monitoring if available
+        if PerformanceMonitor:
+            start_time = time.time()
+
+        # Check cache first for performance optimization
+        cache_key = f"{filters.get('user_id', '')}_{filters.get('run_id', '')}_{limit}"
+        current_time = time.time()
+
+        if hasattr(self, '_contextual_history_cache') and cache_key in self._contextual_history_cache:
+            cached_data = self._contextual_history_cache[cache_key]
+            if current_time - cached_data['timestamp'] < self._cache_ttl:
+                logging.debug(f"Async cache hit for contextual history: {cache_key}")
+                return cached_data['data']
+            else:
+                # Remove expired cache entry
+                del self._contextual_history_cache[cache_key]
+
+        try:
+            # Get historical memories using existing get_all functionality
+            historical_memories = await asyncio.to_thread(
+                self._get_all_from_vector_store, filters, limit * 5
+            )  # Get more to filter
+
+            # Extract original messages from v2 memories and sort by creation time
+            historical_messages = []
+            for memory in historical_memories:
+                # Check if this memory has original_messages (v2 data)
+                if "metadata" in memory and "original_messages" in memory["metadata"]:
+                    original_messages = memory["metadata"]["original_messages"]
+                    created_at = memory.get("created_at")
+
+                    # Add timestamp to each message for sorting
+                    for msg in original_messages:
+                        msg_with_timestamp = msg.copy()
+                        msg_with_timestamp["_created_at"] = created_at
+                        historical_messages.append(msg_with_timestamp)
+                elif "metadata" in memory and "api_version" in memory["metadata"] and memory["metadata"]["api_version"] == "v2":
+                    # v2 memory but no original_messages (edge case)
+                    continue
+                # Skip v1 memories as they don't have original_messages
+
+            # Sort by creation time (oldest first for chronological order)
+            historical_messages.sort(key=lambda x: x.get("_created_at", ""))
+
+            # Remove timestamp and limit to requested number of messages
+            result_messages = []
+            for msg in historical_messages[:limit * 2]:  # Allow some buffer for conversation pairs
+                clean_msg = {k: v for k, v in msg.items() if k != "_created_at"}
+                result_messages.append(clean_msg)
+
+            result = result_messages[:limit * 2]  # Return up to limit*2 messages (user+assistant pairs)
+
+            # Cache the result for future use
+            if hasattr(self, '_contextual_history_cache'):
+                # Implement simple LRU by removing oldest entries if cache is full
+                if len(self._contextual_history_cache) >= self._cache_max_size:
+                    oldest_key = min(self._contextual_history_cache.keys(),
+                                   key=lambda k: self._contextual_history_cache[k]['timestamp'])
+                    del self._contextual_history_cache[oldest_key]
+
+                self._contextual_history_cache[cache_key] = {
+                    'data': result,
+                    'timestamp': current_time
+                }
+                logging.debug(f"Async cached contextual history for: {cache_key}")
+
+            # Log performance metrics
+            if PerformanceMonitor:
+                elapsed_ms = (time.time() - start_time) * 1000
+                if elapsed_ms > 500:  # Target: <500ms
+                    logging.warning(f"Async contextual history retrieval exceeded target: {elapsed_ms:.2f}ms > 500ms")
+                else:
+                    logging.debug(f"Async contextual history retrieval completed in {elapsed_ms:.2f}ms")
+
+            return result
+
+        except Exception as e:
+            logging.warning(f"Error retrieving contextual history: {e}")
+            return []
+
+    def _merge_historical_context(self, historical_messages, new_messages):
+        """
+        Merge historical messages with new messages to form complete conversation context.
+
+        Args:
+            historical_messages (list): List of historical messages from contextual history
+            new_messages (list): List of new messages to be added
+
+        Returns:
+            list: Merged and deduplicated messages in chronological order
+        """
+        try:
+            # Ensure both inputs are lists
+            if not isinstance(historical_messages, list):
+                historical_messages = []
+            if not isinstance(new_messages, list):
+                new_messages = []
+
+            # Create a set to track seen message content for deduplication
+            seen_messages = set()
+            merged_messages = []
+
+            # Helper function to create a unique key for message deduplication
+            def get_message_key(msg):
+                if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                    # Use role + content hash for deduplication
+                    content_hash = hash(str(msg["content"]).strip().lower())
+                    return f"{msg['role']}:{content_hash}"
+                return None
+
+            # Add historical messages first (they are already sorted chronologically)
+            for msg in historical_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Add new messages, avoiding duplicates
+            for msg in new_messages:
+                msg_key = get_message_key(msg)
+                if msg_key and msg_key not in seen_messages:
+                    # Clean message (remove any internal fields)
+                    clean_msg = {
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    }
+                    # Preserve name field if present
+                    if "name" in msg:
+                        clean_msg["name"] = msg["name"]
+
+                    merged_messages.append(clean_msg)
+                    seen_messages.add(msg_key)
+
+            # Implement token length control (rough estimation)
+            # Assume average 4 characters per token, limit to ~8000 tokens (~32000 characters)
+            max_chars = 32000
+            total_chars = 0
+            final_messages = []
+
+            for msg in merged_messages:
+                msg_chars = len(str(msg.get("content", "")))
+                if total_chars + msg_chars <= max_chars:
+                    final_messages.append(msg)
+                    total_chars += msg_chars
+                else:
+                    # If we exceed the limit, stop adding more messages
+                    break
+
+            logging.info(f"Merged {len(historical_messages)} historical + {len(new_messages)} new messages into {len(final_messages)} unique messages")
+            return final_messages
+
+        except Exception as e:
+            logging.warning(f"Error merging historical context: {e}")
+            # Fallback to just new messages if merging fails
+            return new_messages
+
+    async def _create_procedural_memory(self, messages, metadata=None, llm=None, prompt=None, timestamp=None):
         """
         Create a procedural memory asynchronously
 
@@ -1751,7 +2627,7 @@ class AsyncMemory(MemoryBase):
 
         metadata["memory_type"] = MemoryType.PROCEDURAL.value
         embeddings = await asyncio.to_thread(self.embedding_model.embed, procedural_memory, memory_action="add")
-        memory_id = await self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata)
+        memory_id = await self._create_memory(procedural_memory, {procedural_memory: embeddings}, metadata=metadata, timestamp=timestamp)
         capture_event("mem0._create_procedural_memory", self, {"memory_id": memory_id, "sync_type": "async"})
 
         result = {"results": [{"id": memory_id, "memory": procedural_memory, "event": "ADD"}]}
@@ -1774,7 +2650,7 @@ class AsyncMemory(MemoryBase):
         new_metadata["data"] = data
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
-        new_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        new_metadata["updated_at"] = datetime.now(pytz.timezone("Asia/Shanghai")).isoformat()
 
         if "user_id" in existing_memory.payload:
             new_metadata["user_id"] = existing_memory.payload["user_id"]

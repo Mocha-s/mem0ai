@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -6,21 +7,35 @@ from mem0.llms.configs import LlmConfig
 
 
 class Neo4jConfig(BaseModel):
-    url: Optional[str] = Field(None, description="Host address for the graph database")
-    username: Optional[str] = Field(None, description="Username for the graph database")
-    password: Optional[str] = Field(None, description="Password for the graph database")
-    database: Optional[str] = Field(None, description="Database for the graph database")
+    url: Optional[str] = Field(
+        default_factory=lambda: os.getenv("NEO4J_URL", "bolt://neo4j:7687"),
+        description="Host address for the graph database"
+    )
+    username: Optional[str] = Field(
+        default_factory=lambda: os.getenv("NEO4J_USERNAME", "neo4j"),
+        description="Username for the graph database"
+    )
+    password: Optional[str] = Field(
+        default_factory=lambda: os.getenv("NEO4J_PASSWORD", "mem0graph"),
+        description="Password for the graph database"
+    )
+    database: Optional[str] = Field(
+        default_factory=lambda: os.getenv("NEO4J_DATABASE", "neo4j"),
+        description="Database for the graph database"
+    )
     base_label: Optional[bool] = Field(None, description="Whether to use base node label __Entity__ for all entities")
 
     @model_validator(mode="before")
     def check_host_port_or_path(cls, values):
-        url, username, password = (
-            values.get("url"),
-            values.get("username"),
-            values.get("password"),
-        )
-        if not url or not username or not password:
-            raise ValueError("Please provide 'url', 'username' and 'password'.")
+        # Environment variables provide defaults, so validation is more lenient
+        # Only validate if values are explicitly provided and empty
+        url = values.get("url")
+        username = values.get("username")
+        password = values.get("password")
+
+        # If values are explicitly set to empty strings, that's an error
+        if url == "" or username == "" or password == "":
+            raise ValueError("Neo4j 'url', 'username' and 'password' cannot be empty strings.")
         return values
 
 
@@ -85,6 +100,10 @@ class GraphStoreConfig(BaseModel):
     llm: Optional[LlmConfig] = Field(description="LLM configuration for querying the graph store", default=None)
     custom_prompt: Optional[str] = Field(
         description="Custom prompt to fetch entities from the given text", default=None
+    )
+    enabled: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_GRAPH_STORE", "true").lower() in ("true", "1", "yes"),
+        description="Whether graph store is enabled"
     )
 
     @field_validator("config")

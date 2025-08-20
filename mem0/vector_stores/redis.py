@@ -164,12 +164,12 @@ class RedisDB(VectorStoreBase):
                     "hash": result["hash"],
                     "data": result["memory"],
                     "created_at": datetime.fromtimestamp(
-                        int(result["created_at"]), tz=pytz.timezone("US/Pacific")
+                        int(result["created_at"]), tz=pytz.timezone("Asia/Shanghai")
                     ).isoformat(timespec="microseconds"),
                     **(
                         {
                             "updated_at": datetime.fromtimestamp(
-                                int(result["updated_at"]), tz=pytz.timezone("US/Pacific")
+                                int(result["updated_at"]), tz=pytz.timezone("Asia/Shanghai")
                             ).isoformat(timespec="microseconds")
                         }
                         if "updated_at" in result
@@ -207,13 +207,13 @@ class RedisDB(VectorStoreBase):
         payload = {
             "hash": result["hash"],
             "data": result["memory"],
-            "created_at": datetime.fromtimestamp(int(result["created_at"]), tz=pytz.timezone("US/Pacific")).isoformat(
+            "created_at": datetime.fromtimestamp(int(result["created_at"]), tz=pytz.timezone("Asia/Shanghai")).isoformat(
                 timespec="microseconds"
             ),
             **(
                 {
                     "updated_at": datetime.fromtimestamp(
-                        int(result["updated_at"]), tz=pytz.timezone("US/Pacific")
+                        int(result["updated_at"]), tz=pytz.timezone("Asia/Shanghai")
                     ).isoformat(timespec="microseconds")
                 }
                 if "updated_at" in result
@@ -271,12 +271,12 @@ class RedisDB(VectorStoreBase):
                         "hash": result["hash"],
                         "data": result["memory"],
                         "created_at": datetime.fromtimestamp(
-                            int(result["created_at"]), tz=pytz.timezone("US/Pacific")
+                            int(result["created_at"]), tz=pytz.timezone("Asia/Shanghai")
                         ).isoformat(timespec="microseconds"),
                         **(
                             {
                                 "updated_at": datetime.fromtimestamp(
-                                    int(result["updated_at"]), tz=pytz.timezone("US/Pacific")
+                                    int(result["updated_at"]), tz=pytz.timezone("Asia/Shanghai")
                                 ).isoformat(timespec="microseconds")
                             }
                             if result.__dict__.get("updated_at")

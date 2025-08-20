@@ -1,4 +1,5 @@
 import { MemoryClient } from "./mem0";
+import { Project } from "./project";
 import type * as MemoryTypes from "./mem0.types";
 
 // Re-export all types from mem0.types
@@ -21,6 +22,6 @@ export type {
   Feedback,
 } from "./mem0.types";
 
-// Export the main client
-export { MemoryClient };
+// Export the main client and Project class
+export { MemoryClient, Project };
 export default MemoryClient;

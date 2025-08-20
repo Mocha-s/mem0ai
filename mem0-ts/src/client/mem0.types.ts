@@ -55,8 +55,14 @@ export enum Feedback {
 }
 
 export interface MultiModalMessages {
-  type: "image_url";
-  image_url: {
+  type: "image_url" | "mdx_url" | "pdf_url";
+  image_url?: {
+    url: string;
+  };
+  mdx_url?: {
+    url: string;
+  };
+  pdf_url?: {
     url: string;
   };
 }

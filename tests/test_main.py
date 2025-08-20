@@ -296,3 +296,32 @@ def test_custom_prompts(memory_custom_instance):
                 messages=[{"role": "user", "content": mock_get_update_memory_messages.return_value}],
                 response_format={"type": "json_object"},
             )
+
+
+def test_memory_config_custom_instructions_property():
+    """Test MemoryConfig custom_instructions property mapping."""
+    # Test getter
+    config = MemoryConfig(custom_fact_extraction_prompt="Test prompt")
+    assert config.custom_instructions == "Test prompt"
+
+    # Test setter
+    config = MemoryConfig()
+    config.custom_instructions = "New prompt"
+    assert config.custom_fact_extraction_prompt == "New prompt"
+    assert config.custom_instructions == "New prompt"
+
+    # Test None handling
+    config.custom_instructions = None
+    assert config.custom_fact_extraction_prompt is None
+    assert config.custom_instructions is None
+
+
+def test_memory_config_backward_compatibility():
+    """Test that existing custom_fact_extraction_prompt usage still works."""
+    config = MemoryConfig(custom_fact_extraction_prompt="Legacy prompt")
+    assert config.custom_fact_extraction_prompt == "Legacy prompt"
+    assert config.custom_instructions == "Legacy prompt"
+
+    # Test updating via old field
+    config.custom_fact_extraction_prompt = "Updated legacy"
+    assert config.custom_instructions == "Updated legacy"

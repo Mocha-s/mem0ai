@@ -186,3 +186,9 @@ eval/
 qdrant_storage/
 .crossnote
 testing.ipynb
+
+# Ignore all directories starting with a dot
+.*/
+
+# Ignore openmemory directory
+openmemory/

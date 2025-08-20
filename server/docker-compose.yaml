@@ -1,74 +1,154 @@
-name: mem0-dev
+name: mem0-stack
 
 services:
-  mem0:
+  # Mem0 API 服务
+  mem0-api:
     build:
-      context: ..  # Set context to parent directory
-      dockerfile: server/dev.Dockerfile
+      context: ..  # 设置上下文为父目录
+      dockerfile: server/Dockerfile  # 使用优化的生产 Dockerfile
+    container_name: mem0-api
+    # 使用与Dockerfile中相同的用户ID
+    user: "999:999"
     ports:
-      - "8888:8000"
+      - "${API_PORT:-8000}:8000"
     env_file:
       - .env
     networks:
-      - mem0_network
+      - mem0-network
     volumes:
-      - ./history:/app/history      # History db location. By default, it creates a history.db file on the server folder
-      - .:/app                      # Server code. This allows to reload the app when the server code is updated
-      - ../mem0:/app/packages/mem0  # Mem0 library. This allows to reload the app when the library code is updated
+      # 数据持久化
+      - mem0-data:/app/data
+      # 开发卷挂载
+      - .:/app                      # 服务器代码
+      - ../mem0:/app/packages/mem0  # Mem0 库
     depends_on:
-      postgres:
-        condition: service_healthy
-      neo4j:
-        condition: service_healthy
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload  # Enable auto-reload
-    environment:
-      - PYTHONDONTWRITEBYTECODE=1  # Prevents Python from writing .pyc files
-      - PYTHONUNBUFFERED=1  # Ensures Python output is sent straight to terminal
-
-  postgres:
-      image: ankane/pgvector:v0.5.1
-      restart: on-failure
-      shm_size: "128mb" # Increase this if vacuuming fails with a "no space left on device" error
-      networks:
-        - mem0_network
-      environment:
-        - POSTGRES_USER=postgres
-        - POSTGRES_PASSWORD=postgres
-      healthcheck:
-        test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "postgres"]
-        interval: 5s
-        timeout: 5s
-        retries: 5
-      volumes:
-        - postgres_db:/var/lib/postgresql/data
-      ports:
-        - "8432:5432"
-  neo4j:
-    image: neo4j:5.26.4
-    networks:
-      - mem0_network
+      - qdrant
+      - neo4j
     healthcheck:
-      test: wget http://localhost:7687 || exit 1
-      interval: 1s
+      test: ["CMD", "python", "-c", "import urllib.request, sys; urllib.request.urlopen('http://localhost:8000/health', timeout=5); sys.exit(0)"]
+      interval: 30s
       timeout: 10s
-      retries: 20
-      start_period: 90s
-    ports:
-      - "8474:7474" # HTTP
-      - "8687:7687" # Bolt
-    volumes:
-      - neo4j_data:/data
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
     environment:
-      - NEO4J_AUTH=neo4j/mem0graph
-      - NEO4J_PLUGINS=["apoc"]  # Add this line to install APOC
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - PYTHONWARNINGS=ignore
+      - MEM0_DATA_PATH=/app/data
+      - MEM0_DIR=/app/data/.mem0
+      - NEO4J_URL=bolt://neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=mem0graph
+      - TZ=Asia/Shanghai
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Qdrant 向量数据库
+  qdrant:
+    image: qdrant/qdrant:v1.11.3
+    container_name: mem0-qdrant
+    networks:
+      - mem0-network
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+      - TZ=Asia/Shanghai
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+
+  # Neo4j 图数据库
+  neo4j:
+    image: neo4j:5.26.0
+    container_name: mem0-neo4j
+    networks:
+      - mem0-network
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "mem0graph", "RETURN 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"  # HTTP 端口
+      - "${NEO4J_BOLT_PORT:-7687}:7687"  # Bolt 端口
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+      - neo4j-import:/var/lib/neo4j/import
+      - neo4j-plugins:/plugins
+    restart: unless-stopped
+    environment:
+      - NEO4J_AUTH=${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-mem0graph}
+      - NEO4J_PLUGINS=["apoc"]
       - NEO4J_apoc_export_file_enabled=true
       - NEO4J_apoc_import_file_enabled=true
       - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=1G
+      - NEO4J_dbms_memory_heap_max__size=4G
+      - NEO4J_dbms_memory_pagecache_size=2G
+      - NEO4J_dbms_logs_debug_level=INFO
+      - TZ=Asia/Shanghai
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
 
+# 数据持久化的命名卷
 volumes:
-  neo4j_data:
-  postgres_db:
+  # Mem0 应用数据
+  mem0-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${MEM0_DATA_PATH:-/var/lib/mem0/data}
 
+  # Qdrant 向量数据库
+  qdrant-data:
+    driver: local
+
+  # Neo4j 图数据库
+  neo4j-data:
+    driver: local
+  neo4j-logs:
+    driver: local
+  neo4j-import:
+    driver: local
+  neo4j-plugins:
+    driver: local
+
+
+
+# 网络配置
 networks:
-  mem0_network:
+  mem0-network:
     driver: bridge
+    name: mem0-network

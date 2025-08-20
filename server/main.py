@@ -1,13 +1,34 @@
-import logging
+import sys
 import os
-from typing import Any, Dict, List, Optional
+# Add local packages to Python path for development
+sys.path.insert(0, "/app/packages")
+os.environ['PYTHONPATH'] = "/app/packages:" + os.environ.get('PYTHONPATH', '')
+
+import json
+import logging
+import threading
+import time
+import uuid
+import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+import fcntl
+
+# Filter out compatibility and deprecation warnings
+warnings.filterwarnings("ignore", message="Qdrant client version .* is incompatible with server version .*")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message="Field name .* shadows an attribute")
+warnings.filterwarnings("ignore", message="`max_items` is deprecated and will be removed, use `max_length` instead")
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
 from mem0 import Memory
+from mem0.utils.timestamp import validate_unix_timestamp
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -22,7 +43,7 @@ POSTGRES_USER = os.environ.get("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "postgres")
 POSTGRES_COLLECTION_NAME = os.environ.get("POSTGRES_COLLECTION_NAME", "memories")
 
-NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_URI = os.environ.get("NEO4J_URI") or os.environ.get("NEO4J_URL", "bolt://neo4j:7687")
 NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "mem0graph")
 
@@ -31,32 +52,160 @@ MEMGRAPH_USERNAME = os.environ.get("MEMGRAPH_USERNAME", "memgraph")
 MEMGRAPH_PASSWORD = os.environ.get("MEMGRAPH_PASSWORD", "mem0graph")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+OPENAI_TEMPERATURE = float(os.environ.get("OPENAI_TEMPERATURE", "0.1"))
+OPENAI_MAX_TOKENS = int(os.environ.get("OPENAI_MAX_TOKENS", "2000"))
+# 多模态功能配置
+OPENAI_ENABLE_VISION = os.environ.get("OPENAI_ENABLE_VISION", "true").lower() == "true"
+OPENAI_VISION_DETAILS = os.environ.get("OPENAI_VISION_DETAILS", "auto")
+FORCE_MULTIMODAL_CONFIG = os.environ.get("FORCE_MULTIMODAL_CONFIG", "false").lower() == "true"
+HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/data/history.db")
 
 DEFAULT_CONFIG = {
     "version": "v1.1",
     "vector_store": {
-        "provider": "pgvector",
+        "provider": "qdrant",
         "config": {
-            "host": POSTGRES_HOST,
-            "port": int(POSTGRES_PORT),
-            "dbname": POSTGRES_DB,
-            "user": POSTGRES_USER,
-            "password": POSTGRES_PASSWORD,
-            "collection_name": POSTGRES_COLLECTION_NAME,
+            "host": "qdrant",
+            "port": 6333,
         },
     },
-    "graph_store": {
-        "provider": "neo4j",
-        "config": {"url": NEO4J_URI, "username": NEO4J_USERNAME, "password": NEO4J_PASSWORD},
+    "llm": {
+        "provider": "openai",
+        "config": {
+            "api_key": OPENAI_API_KEY,
+            "model": OPENAI_MODEL,
+            "temperature": OPENAI_TEMPERATURE,
+            "max_tokens": OPENAI_MAX_TOKENS,
+            "openai_base_url": OPENAI_BASE_URL,
+            "enable_vision": OPENAI_ENABLE_VISION,
+            "vision_details": OPENAI_VISION_DETAILS
+        }
     },
-    "llm": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "temperature": 0.2, "model": "gpt-4o"}},
-    "embedder": {"provider": "openai", "config": {"api_key": OPENAI_API_KEY, "model": "text-embedding-3-small"}},
+    "embedder": {
+        "provider": "openai",
+        "config": {
+            "api_key": OPENAI_API_KEY,
+            "model": OPENAI_EMBEDDING_MODEL,
+            "openai_base_url": OPENAI_BASE_URL
+        }
+    },
     "history_db_path": HISTORY_DB_PATH,
 }
 
+# Add graph_store configuration if Neo4j is available
+# Graph functionality will be controlled dynamically via API parameters
+if NEO4J_URI or os.environ.get("NEO4J_URL"):
+    DEFAULT_CONFIG["graph_store"] = {
+        "provider": "neo4j",
+        "config": {
+            "url": NEO4J_URI or os.environ.get("NEO4J_URL"),
+            "username": NEO4J_USERNAME,
+            "password": NEO4J_PASSWORD
+        }
+    }
+
 
 MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)
+
+def check_multimodal_functionality():
+    """启动时检查多模态功能是否正常"""
+    global MEMORY_INSTANCE
+    if FORCE_MULTIMODAL_CONFIG:
+        try:
+            # 简单测试LLM是否支持视觉
+            if hasattr(MEMORY_INSTANCE, 'llm') and MEMORY_INSTANCE.llm:
+                logging.info("✅ 多模态功能配置验证通过")
+            else:
+                logging.warning("⚠️ LLM实例未正确初始化")
+        except Exception as e:
+            logging.error(f"❌ 多模态功能检查失败: {e}")
+            # 尝试重新配置
+            try:
+                MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)
+                logging.info("✅ 自动重新配置多模态功能成功")
+            except Exception as retry_error:
+                logging.error(f"❌ 自动修复失败: {retry_error}")
+
+# 启动时检查多模态功能
+check_multimodal_functionality()
+
+# Global graph memory cache for performance optimization
+GRAPH_MEMORY_CACHE = {}
+CACHE_LOCK = threading.Lock()
+
+# Global export task storage and executor
+EXPORT_TASKS = {}  # {task_id: {"status": str, "result": Any, "error": str, "created_at": datetime}}
+EXPORT_EXECUTOR = ThreadPoolExecutor(max_workers=3)
+
+
+def get_graph_enabled_memory():
+    """
+    Get or create a cached graph-enabled Memory instance.
+
+    Returns:
+        Memory: A Memory instance with graph capabilities enabled
+
+    Raises:
+        HTTPException: If graph memory is not configured
+    """
+    cache_key = "graph_enabled"
+
+    with CACHE_LOCK:
+        if cache_key not in GRAPH_MEMORY_CACHE:
+            # Check if graph store is configured
+            if "graph_store" not in DEFAULT_CONFIG:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Graph memory is not configured. Please set NEO4J_URI environment variable."
+                )
+
+            # Create graph-enabled configuration
+            graph_config = DEFAULT_CONFIG.copy()
+
+            # Create and cache the Memory instance
+            try:
+                GRAPH_MEMORY_CACHE[cache_key] = Memory.from_config(graph_config)
+                logging.info("Created and cached graph-enabled Memory instance")
+            except Exception as e:
+                logging.error(f"Failed to create graph-enabled Memory instance: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to initialize graph memory: {str(e)}"
+                )
+
+        return GRAPH_MEMORY_CACHE[cache_key]
+
+
+def clear_graph_memory_cache():
+    """
+    Clear the graph memory cache.
+
+    This function can be used to force recreation of graph memory instances,
+    useful for configuration changes or memory management.
+    """
+    with CACHE_LOCK:
+        if GRAPH_MEMORY_CACHE:
+            logging.info("Clearing graph memory cache")
+            GRAPH_MEMORY_CACHE.clear()
+
+
+def get_memory_instance_for_request(enable_graph: bool):
+    """
+    Get the appropriate Memory instance for a request.
+    
+    Since graph functionality is now handled dynamically per request,
+    we always return the main MEMORY_INSTANCE.
+
+    Args:
+        enable_graph (bool): Whether graph memory is requested (passed through to methods)
+
+    Returns:
+        Memory: The main MEMORY_INSTANCE which supports dynamic graph control
+    """
+    return MEMORY_INSTANCE
 
 app = FastAPI(
     title="Mem0 REST APIs",
@@ -65,9 +214,64 @@ app = FastAPI(
 )
 
 
+@app.get("/health", summary="Health Check")
+def health_check():
+    """Health check endpoint for Docker health checks and load balancers."""
+    try:
+        # Comprehensive health check
+        health_status = {
+            "status": "healthy",
+            "service": "mem0-api",
+            "version": "1.0.0",
+            "timestamp": time.time(),
+            "checks": {}
+        }
+
+        # Check memory instance
+        if MEMORY_INSTANCE:
+            health_status["checks"]["memory_instance"] = "ok"
+        else:
+            health_status["checks"]["memory_instance"] = "failed"
+            health_status["status"] = "unhealthy"
+
+        # Check database connections (basic connectivity)
+        try:
+            # This is a lightweight check - just verify the instance exists
+            if hasattr(MEMORY_INSTANCE, 'vector_store'):
+                health_status["checks"]["vector_store"] = "ok"
+            else:
+                health_status["checks"]["vector_store"] = "unknown"
+        except Exception:
+            health_status["checks"]["vector_store"] = "failed"
+
+        try:
+            if hasattr(MEMORY_INSTANCE, 'graph_store'):
+                health_status["checks"]["graph_store"] = "ok"
+            else:
+                health_status["checks"]["graph_store"] = "unknown"
+        except Exception:
+            health_status["checks"]["graph_store"] = "failed"
+
+        # Return appropriate status code
+        if health_status["status"] == "healthy":
+            return health_status
+        else:
+            raise HTTPException(status_code=503, detail=health_status)
+
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={
+            "status": "unhealthy",
+            "error": str(e),
+            "service": "mem0-api"
+        })
+
+
+
+
+
 class Message(BaseModel):
     role: str = Field(..., description="Role of the message (user or assistant).")
-    content: str = Field(..., description="Message content.")
+    content: Union[str, Dict[str, Any], List[Dict[str, Any]]] = Field(..., description="Message content (string, dict, or list of multimodal objects).")
 
 
 class MemoryCreate(BaseModel):
@@ -76,6 +280,42 @@ class MemoryCreate(BaseModel):
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    custom_categories: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="Optional list of custom category dictionaries. Format: [{'category_name': 'description'}, ...]"
+    )
+    custom_instructions: Optional[str] = Field(
+        None,
+        description="Optional custom instructions to guide memory extraction and processing. "
+                   "Overrides the default fact extraction behavior for this request."
+    )
+    version: Optional[str] = Field("v1", description="API version for memory creation. v1 (default) or v2 (contextual add).")
+    includes: Optional[str] = Field(None, description="Include only specific types of memories")
+    excludes: Optional[str] = Field(None, description="Exclude specific types of memories")
+    timestamp: Optional[int] = Field(None, description="Unix timestamp (seconds since epoch) for when the memory was created")
+    enable_graph: Optional[bool] = Field(None, description="Enable graph memory processing for relationship extraction")
+    output_format: Optional[str] = Field(None, description="Output format version (v1.1 for graph relations)")
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_timestamp_field(cls, v):
+        """Validate timestamp parameter."""
+        if v is not None:
+            try:
+                # Use the timestamp validation utility
+                validate_unix_timestamp(v)
+                return v
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid timestamp: {e}")
+        return v
+
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, v):
+        """Validate output_format parameter."""
+        if v is not None and v not in ["v1.1"]:
+            raise ValueError("Invalid output_format. Supported formats: v1.1")
+        return v
 
 
 class SearchRequest(BaseModel):
@@ -84,6 +324,75 @@ class SearchRequest(BaseModel):
     run_id: Optional[str] = None
     agent_id: Optional[str] = None
     filters: Optional[Dict[str, Any]] = None
+    keyword_search: Optional[bool] = Field(False, description="Enable BM25 keyword search")
+    rerank: Optional[bool] = Field(False, description="Enable LLM-based reranking")
+    filter_memories: Optional[bool] = Field(False, description="Enable intelligent memory filtering")
+    enable_graph: Optional[bool] = Field(False, description="Enable graph memory search for relationship-based results")
+    output_format: Optional[str] = Field(None, description="Output format version (v1.1 for graph relations)")
+
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, v):
+        """Validate output_format parameter."""
+        if v is not None and v not in ["v1.1"]:
+            raise ValueError("Invalid output_format. Supported formats: v1.1")
+        return v
+
+
+class UpdateMemoryRequest(BaseModel):
+    text: str = Field(..., description="Updated text content of the memory")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata to update")
+
+class BatchUpdateRequest(BaseModel):
+    memories: List[Dict[str, str]] = Field(
+        ...,
+        description="List of memories to update. Each memory should contain 'memory_id' and 'text' fields.",
+        max_items=1000
+    )
+
+
+class BatchDeleteRequest(BaseModel):
+    memories: List[Dict[str, str]] = Field(
+        ...,
+        description="List of memories to delete. Each memory should contain 'memory_id' field.",
+        max_items=1000
+    )
+
+
+class ExportRequest(BaseModel):
+    schema: Dict[str, Any] = Field(..., description="Export data structure definition using Pydantic schema format.")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Filtering conditions for memories to export.")
+    processing_instruction: Optional[str] = Field(None, description="Additional processing instructions for the export.")
+
+
+class FeedbackRequest(BaseModel):
+    memory_id: str = Field(..., description="ID of the memory to provide feedback for.")
+    feedback: Optional[str] = Field(None, description="Feedback type: POSITIVE, NEGATIVE, or VERY_NEGATIVE.")
+    feedback_reason: Optional[str] = Field(None, description="Optional reason for the feedback.")
+
+
+class V2MemoriesRequest(BaseModel):
+    filters: Optional[Dict[str, Any]] = Field(None, description="Complex filters with AND/OR/NOT logic support.")
+    limit: Optional[int] = Field(50, description="Maximum number of memories to return.", ge=1, le=1000)
+
+
+class V2SearchRequest(BaseModel):
+    query: str = Field(..., description="Search query string.")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Complex filters with AND/OR/NOT logic support.")
+    limit: Optional[int] = Field(50, description="Maximum number of search results to return.", ge=1, le=1000)
+    keyword_search: Optional[bool] = Field(False, description="Enable BM25 keyword search")
+    rerank: Optional[bool] = Field(False, description="Enable LLM-based reranking")
+    filter_memories: Optional[bool] = Field(False, description="Enable intelligent memory filtering")
+    enable_graph: Optional[bool] = Field(False, description="Enable graph memory search for relationship-based results")
+    output_format: Optional[str] = Field(None, description="Output format version (v1.1 for graph relations)")
+
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, v):
+        """Validate output_format parameter."""
+        if v is not None and v not in ["v1.1"]:
+            raise ValueError("Invalid output_format. Supported formats: v1.1")
+        return v
 
 
 @app.post("/configure", summary="Configure Mem0")
@@ -91,44 +400,176 @@ def set_config(config: Dict[str, Any]):
     """Set memory configuration."""
     global MEMORY_INSTANCE
     MEMORY_INSTANCE = Memory.from_config(config)
+    # Clear graph memory cache when configuration changes
+    clear_graph_memory_cache()
     return {"message": "Configuration set successfully"}
 
 
-@app.post("/memories", summary="Create memories")
+@app.post("/cache/clear", summary="Clear graph memory cache")
+def clear_cache():
+    """Clear the graph memory cache to force recreation of instances."""
+    clear_graph_memory_cache()
+    return {"message": "Graph memory cache cleared successfully"}
+
+
+@app.get("/cache/status", summary="Get cache status")
+def get_cache_status():
+    """Get information about the current cache status."""
+    with CACHE_LOCK:
+        cache_info = {
+            "cached_instances": len(GRAPH_MEMORY_CACHE),
+            "cache_keys": list(GRAPH_MEMORY_CACHE.keys()),
+            "main_instance_graph_enabled": getattr(MEMORY_INSTANCE, 'enable_graph', False)
+        }
+    return cache_info
+
+
+@app.post("/v1/memories/", summary="Create memories")
 def add_memory(memory_create: MemoryCreate):
     """Store new memories."""
     if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
         raise HTTPException(status_code=400, detail="At least one identifier (user_id, agent_id, run_id) is required.")
 
-    params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
+    # Validate version parameter
+    if memory_create.version and memory_create.version not in ["v1", "v2"]:
+        raise HTTPException(status_code=400, detail="Invalid version. Supported versions: v1, v2")
+
+    # Validate timestamp parameter if provided
+    if memory_create.timestamp is not None:
+        try:
+            # Additional validation with detailed logging
+            validate_unix_timestamp(memory_create.timestamp)
+            logging.info(f"Valid timestamp provided: {memory_create.timestamp}")
+        except (ValueError, TypeError) as e:
+            logging.warning(f"Invalid timestamp {memory_create.timestamp}: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid timestamp: {e}")
+
+    # Validate custom_categories if provided
+    if memory_create.custom_categories is not None:
+        try:
+            from mem0.client.validation import validate_custom_categories
+            validate_custom_categories(memory_create.custom_categories)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    # Validate custom_instructions if provided
+    if memory_create.custom_instructions is not None:
+        try:
+            from mem0.client.validation import validate_custom_instructions
+            validate_custom_instructions(memory_create.custom_instructions)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    # Extract graph memory parameters
+    enable_graph = memory_create.enable_graph
+    output_format = memory_create.output_format
+
+    # Prepare parameters excluding messages, custom_instructions, enable_graph, and output_format (handled separately)
+    params = {k: v for k, v in memory_create.model_dump().items()
+              if v is not None and k not in ["messages", "custom_instructions", "enable_graph", "output_format"]}
+
     try:
-        response = MEMORY_INSTANCE.add(messages=[m.model_dump() for m in memory_create.messages], **params)
-        return JSONResponse(content=response)
+        # Get the appropriate memory instance (cached if graph memory is needed)
+        memory_instance = get_memory_instance_for_request(enable_graph)
+
+        # Handle custom_instructions by temporarily modifying the memory instance
+        if memory_create.custom_instructions is not None:
+            # Store original instructions
+            original_instructions = memory_instance.custom_fact_extraction_prompt
+
+            try:
+                # Temporarily set custom instructions
+                memory_instance.custom_fact_extraction_prompt = memory_create.custom_instructions
+
+                # Add memories with custom instructions
+                response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], enable_graph=enable_graph, **params)
+
+            finally:
+                # Always restore original instructions
+                memory_instance.custom_fact_extraction_prompt = original_instructions
+        else:
+            # Normal processing without custom instructions
+            response = memory_instance.add(messages=[m.model_dump() for m in memory_create.messages], enable_graph=enable_graph, **params)
+
+        # Process response based on output_format and enable_graph
+        if output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
+            if isinstance(response, dict) and "relations" in response:
+                return JSONResponse(content=response)
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(response, dict) and "results" in response:
+                    response["relations"] = []
+                    return JSONResponse(content=response)
+                else:
+                    response = {"results": response, "relations": []}
+                    return JSONResponse(content=response)
+        else:
+            # Return standard response format for backwards compatibility
+            if isinstance(response, dict) and "results" in response:
+                return JSONResponse(content=response["results"])
+            else:
+                return JSONResponse(content=response)
     except Exception as e:
         logging.exception("Error in add_memory:")  # This will log the full traceback
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/memories", summary="Get memories")
+@app.get("/v1/memories/", summary="Get memories")
 def get_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of memories to return"),
+    enable_graph: Optional[bool] = Query(False, description="Enable graph memory processing for relationship extraction"),
+    output_format: Optional[str] = Query(None, description="Output format version (v1.1 for graph relations)")
 ):
     """Retrieve stored memories."""
     if not any([user_id, run_id, agent_id]):
         raise HTTPException(status_code=400, detail="At least one identifier is required.")
+
+    # Validate output_format
+    if output_format is not None and output_format not in ["v1.1"]:
+        raise HTTPException(status_code=400, detail="Invalid output_format. Supported formats: v1.1")
+
     try:
+        # Prepare base parameters
         params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
+            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id, "limit": limit}.items() if v is not None
         }
-        return MEMORY_INSTANCE.get_all(**params)
+
+        # Get the appropriate memory instance (cached if graph memory is needed)
+        memory_instance = get_memory_instance_for_request(enable_graph)
+
+        # Get all memories
+        response = memory_instance.get_all(enable_graph=enable_graph, **params)
+
+        # Process response based on output_format and enable_graph
+        if output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
+            if isinstance(response, dict) and "relations" in response:
+                return JSONResponse(content=response)
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(response, dict) and "results" in response:
+                    response["relations"] = []
+                    return JSONResponse(content=response)
+                else:
+                    response = {"results": response, "relations": []}
+                    return JSONResponse(content=response)
+        else:
+            # Return standard response format for backwards compatibility
+            if isinstance(response, dict) and "results" in response:
+                return JSONResponse(content=response["results"])
+            else:
+                return JSONResponse(content=response)
+
     except Exception as e:
         logging.exception("Error in get_all_memories:")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/memories/{memory_id}", summary="Get a memory")
+@app.get("/v1/memories/{memory_id}/", summary="Get a memory")
 def get_memory(memory_id: str):
     """Retrieve a specific memory by ID."""
     try:
@@ -138,36 +579,63 @@ def get_memory(memory_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/search", summary="Search memories")
+@app.post("/v1/memories/search/", summary="Search memories")
 def search_memories(search_req: SearchRequest):
     """Search for memories based on a query."""
     try:
-        params = {k: v for k, v in search_req.model_dump().items() if v is not None and k != "query"}
-        return MEMORY_INSTANCE.search(query=search_req.query, **params)
+        # Extract graph memory parameters
+        enable_graph = search_req.enable_graph
+        output_format = search_req.output_format
+
+        # Extract all parameters except query, enable_graph, and output_format
+        params = {k: v for k, v in search_req.model_dump().items()
+                  if k not in ["query", "enable_graph", "output_format"]}
+        # Remove None values but keep False values for boolean parameters
+        params = {k: v for k, v in params.items() if v is not None}
+
+        # Get the appropriate memory instance (cached if graph memory is needed)
+        memory_instance = get_memory_instance_for_request(enable_graph)
+
+        # Perform search
+        response = memory_instance.search(query=search_req.query, enable_graph=enable_graph, **params)
+
+        # Process response based on output_format and enable_graph
+        if output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
+            if isinstance(response, dict) and "relations" in response:
+                return JSONResponse(content=response)
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(response, dict) and "results" in response:
+                    response["relations"] = []
+                    return JSONResponse(content=response)
+                else:
+                    response = {"results": response, "relations": []}
+                    return JSONResponse(content=response)
+        else:
+            # Return standard response format for backwards compatibility
+            if isinstance(response, dict) and "results" in response:
+                return JSONResponse(content=response["results"])
+            else:
+                return JSONResponse(content=response)
+
     except Exception as e:
         logging.exception("Error in search_memories:")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.put("/memories/{memory_id}", summary="Update a memory")
-def update_memory(memory_id: str, updated_memory: Dict[str, Any]):
-    """Update an existing memory with new content.
-    
-    Args:
-        memory_id (str): ID of the memory to update
-        updated_memory (str): New content to update the memory with
-        
-    Returns:
-        dict: Success message indicating the memory was updated
-    """
+@app.put("/v1/memories/{memory_id}/", summary="Update a memory")
+def update_memory(memory_id: str, request: UpdateMemoryRequest):
+    """Update an existing memory."""
     try:
-        return MEMORY_INSTANCE.update(memory_id=memory_id, data=updated_memory)
+        result = MEMORY_INSTANCE.update(memory_id=memory_id, data=request.text, metadata=request.metadata)
+        return result
     except Exception as e:
         logging.exception("Error in update_memory:")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/memories/{memory_id}/history", summary="Get memory history")
+@app.get("/v1/memories/{memory_id}/history/", summary="Get memory history")
 def memory_history(memory_id: str):
     """Retrieve memory history."""
     try:
@@ -177,7 +645,7 @@ def memory_history(memory_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/memories/{memory_id}", summary="Delete a memory")
+@app.delete("/v1/memories/{memory_id}/", summary="Delete a memory")
 def delete_memory(memory_id: str):
     """Delete a specific memory by ID."""
     try:
@@ -188,7 +656,7 @@ def delete_memory(memory_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/memories", summary="Delete all memories")
+@app.delete("/v1/memories/", summary="Delete all memories")
 def delete_all_memories(
     user_id: Optional[str] = None,
     run_id: Optional[str] = None,
@@ -219,7 +687,573 @@ def reset_memory():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/", summary="Redirect to the OpenAPI documentation", include_in_schema=False)
-def home():
-    """Redirect to the OpenAPI documentation."""
-    return RedirectResponse(url="/docs")
+def format_memories_by_schema(memories: List[Dict[str, Any]], schema: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Format memories according to the provided schema.
+
+    Args:
+        memories: List of memory objects
+        schema: Schema definition for formatting
+
+    Returns:
+        Formatted memories according to schema
+    """
+    if not memories or not schema:
+        return memories
+
+    formatted_memories = []
+
+    for memory in memories:
+        formatted_memory = {}
+
+        # Apply schema mapping
+        for field_name, field_config in schema.items():
+            if isinstance(field_config, dict):
+                # Handle complex field configuration
+                source_field = field_config.get("source", field_name)
+                default_value = field_config.get("default", None)
+
+                if source_field in memory:
+                    formatted_memory[field_name] = memory[source_field]
+                elif default_value is not None:
+                    formatted_memory[field_name] = default_value
+            else:
+                # Simple field mapping
+                if field_name in memory:
+                    formatted_memory[field_name] = memory[field_name]
+
+        formatted_memories.append(formatted_memory)
+
+    return formatted_memories
+
+
+def process_export_task(task_id: str, filters: Dict[str, Any], schema: Dict[str, Any], processing_instruction: str = None):
+    """
+    Process export task asynchronously.
+
+    Args:
+        task_id: Unique task identifier
+        filters: Filters to apply when getting memories
+        schema: Schema for formatting the exported data
+        processing_instruction: Additional processing instructions
+    """
+    try:
+        # Update task status to processing
+        EXPORT_TASKS[task_id]["status"] = "processing"
+
+        # Get memories using filters
+        if filters:
+            memories = MEMORY_INSTANCE.get_all(**filters)
+        else:
+            # If no filters, get all memories (this might be resource intensive)
+            memories = MEMORY_INSTANCE.get_all()
+
+        # Ensure memories is a list
+        if not isinstance(memories, list):
+            memories = [memories] if memories else []
+
+        # Format memories according to schema
+        formatted_data = format_memories_by_schema(memories, schema)
+
+        # Apply processing instruction if provided
+        if processing_instruction:
+            # For now, just add the instruction as metadata
+            result = {
+                "data": formatted_data,
+                "processing_instruction": processing_instruction,
+                "total_count": len(formatted_data)
+            }
+        else:
+            result = {
+                "data": formatted_data,
+                "total_count": len(formatted_data)
+            }
+
+        # Update task status to completed
+        EXPORT_TASKS[task_id].update({
+            "status": "completed",
+            "result": result,
+            "completed_at": datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        logging.exception(f"Error in export task {task_id}:")
+        EXPORT_TASKS[task_id].update({
+            "status": "failed",
+            "error": str(e),
+            "failed_at": datetime.now().isoformat()
+        })
+
+
+def cleanup_old_export_tasks():
+    """Clean up export tasks older than 1 hour."""
+    current_time = datetime.now()
+    tasks_to_remove = []
+
+    for task_id, task_info in EXPORT_TASKS.items():
+        created_at = datetime.fromisoformat(task_info.get("created_at", current_time.isoformat()))
+        if (current_time - created_at).total_seconds() > 3600:  # 1 hour
+            tasks_to_remove.append(task_id)
+
+    for task_id in tasks_to_remove:
+        del EXPORT_TASKS[task_id]
+
+
+@app.post("/v1/exports/", summary="Create memory export job")
+def create_memory_export(export_request: ExportRequest):
+    """Create an asynchronous memory export job."""
+    try:
+        # Clean up old tasks
+        cleanup_old_export_tasks()
+
+        # Check if we have too many active tasks
+        active_tasks = sum(1 for task in EXPORT_TASKS.values() if task["status"] in ["pending", "processing"])
+        if active_tasks >= 10:  # Limit concurrent export tasks
+            raise HTTPException(status_code=429, detail="Too many active export tasks. Please try again later.")
+
+        # Generate unique task ID
+        task_id = str(uuid.uuid4())
+
+        # Initialize task in storage
+        EXPORT_TASKS[task_id] = {
+            "status": "pending",
+            "created_at": datetime.now().isoformat(),
+            "filters": export_request.filters,
+            "schema": export_request.schema,
+            "processing_instruction": export_request.processing_instruction
+        }
+
+        # Submit task to executor
+        EXPORT_EXECUTOR.submit(
+            process_export_task,
+            task_id,
+            export_request.filters or {},
+            export_request.schema,
+            export_request.processing_instruction
+        )
+
+        return {
+            "id": task_id,
+            "message": "Export job created successfully",
+            "status": "pending"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Error creating export job:")
+        raise HTTPException(status_code=500, detail=f"Failed to create export job: {str(e)}")
+
+
+@app.post("/v1/exports/get", summary="Get memory export result")
+def get_memory_export(request: Dict[str, str]):
+    """Get the result of a memory export job."""
+    try:
+        task_id = request.get("memory_export_id") or request.get("task_id")
+
+        if not task_id:
+            raise HTTPException(status_code=400, detail="memory_export_id or task_id is required")
+
+        if task_id not in EXPORT_TASKS:
+            raise HTTPException(status_code=404, detail="Export task not found")
+
+        task_info = EXPORT_TASKS[task_id]
+
+        response = {
+            "id": task_id,
+            "status": task_info["status"],
+            "created_at": task_info["created_at"]
+        }
+
+        if task_info["status"] == "completed":
+            response["result"] = task_info["result"]
+            response["completed_at"] = task_info.get("completed_at")
+        elif task_info["status"] == "failed":
+            response["error"] = task_info["error"]
+            response["failed_at"] = task_info.get("failed_at")
+        elif task_info["status"] == "processing":
+            response["message"] = "Export job is still processing"
+        else:  # pending
+            response["message"] = "Export job is pending"
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Error getting export result:")
+        raise HTTPException(status_code=500, detail=f"Failed to get export result: {str(e)}")
+
+
+def process_v2_filters(filters: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process V2 API complex filters and convert them to Memory class compatible format.
+
+    Supports:
+    - AND/OR/NOT logical operators
+    - Comparison operators: gte, lte, in, icontains
+    - Backward compatibility with simple filters
+    """
+    if not filters:
+        return {}
+
+    processed_filters = {}
+
+    # Memory.get_all() only accepts these specific parameters
+    simple_filter_keys = {"user_id", "agent_id", "run_id"}
+    
+    # Handle simple filters (backward compatibility)
+    for key in simple_filter_keys:
+        if key in filters:
+            processed_filters[key] = filters[key]
+
+    # Collect complex filters to be passed in the 'filters' parameter
+    complex_filters = {}
+
+    # Handle complex logical operators
+    if "AND" in filters:
+        # For AND operations, merge all conditions
+        and_conditions = filters["AND"]
+        if isinstance(and_conditions, list):
+            for condition in and_conditions:
+                if isinstance(condition, dict):
+                    sub_result = process_v2_filters(condition)
+                    # Extract simple keys
+                    for k in simple_filter_keys:
+                        if k in sub_result:
+                            processed_filters[k] = sub_result[k]
+                    # Extract complex filters
+                    if "filters" in sub_result:
+                        complex_filters.update(sub_result["filters"])
+
+    if "OR" in filters:
+        # For OR operations, we'll need to handle this at the application level
+        # since Memory class doesn't directly support OR operations
+        # For now, we'll take the first condition as a fallback
+        or_conditions = filters["OR"]
+        if isinstance(or_conditions, list) and or_conditions:
+            sub_result = process_v2_filters(or_conditions[0])
+            # Extract simple keys
+            for k in simple_filter_keys:
+                if k in sub_result:
+                    processed_filters[k] = sub_result[k]
+            # Extract complex filters
+            if "filters" in sub_result:
+                complex_filters.update(sub_result["filters"])
+
+    if "NOT" in filters:
+        # NOT operations are complex and would need special handling
+        # For now, we'll skip NOT conditions as they require post-processing
+        pass
+
+    # Handle metadata and other complex conditions (including category)
+    for key, value in filters.items():
+        if key in {"AND", "OR", "NOT"} or key in simple_filter_keys:
+            continue
+
+        if isinstance(value, dict):
+            # Handle comparison operators
+            if "gte" in value:
+                # Greater than or equal - for metadata fields
+                complex_filters[f"{key}__gte"] = value["gte"]
+            elif "lte" in value:
+                # Less than or equal - for metadata fields
+                complex_filters[f"{key}__lte"] = value["lte"]
+            elif "in" in value:
+                # Value in list
+                complex_filters[f"{key}__in"] = value["in"]
+            elif "icontains" in value:
+                # Case-insensitive contains
+                complex_filters[f"{key}__icontains"] = value["icontains"]
+            else:
+                # Direct assignment for other dict values
+                complex_filters[key] = value
+        else:
+            # Direct assignment for simple values - put in complex filters
+            complex_filters[key] = value
+
+    # If we have complex filters, add them to the 'filters' parameter
+    if complex_filters:
+        processed_filters["filters"] = complex_filters
+
+    return processed_filters
+
+
+@app.post("/v2/memories/", summary="Get memories with complex filters (V2)")
+def get_memories_v2(request: V2MemoriesRequest):
+    """Retrieve memories with complex filtering support."""
+    try:
+        # Process complex filters
+        processed_filters = process_v2_filters(request.filters or {})
+
+        # Get memories using processed filters
+        memories = MEMORY_INSTANCE.get_all(**processed_filters)
+
+        # Apply limit if specified
+        if request.limit and isinstance(memories, list):
+            memories = memories[:request.limit]
+
+        return {
+            "memories": memories,
+            "total_count": len(memories) if isinstance(memories, list) else 1,
+            "limit": request.limit,
+            "filters_applied": processed_filters
+        }
+
+    except Exception as e:
+        logging.exception("Error in get_memories_v2:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v2/memories/search/", summary="Search memories with complex filters (V2)")
+def search_memories_v2(request: V2SearchRequest):
+    """Search memories with complex filtering support."""
+    try:
+        # Process complex filters
+        processed_filters = process_v2_filters(request.filters or {})
+
+        # Prepare search parameters including advanced retrieval options
+        search_params = {
+            **processed_filters,
+            "limit": request.limit or 50
+        }
+
+        # Add advanced retrieval parameters if specified
+        if request.keyword_search is not None:
+            search_params["keyword_search"] = request.keyword_search
+        if request.rerank is not None:
+            search_params["rerank"] = request.rerank
+        if request.filter_memories is not None:
+            search_params["filter_memories"] = request.filter_memories
+
+        # Add graph memory parameter if specified
+        if hasattr(request, 'enable_graph') and request.enable_graph is not None:
+            search_params["enable_graph"] = request.enable_graph
+
+        # Remove output_format from search_params as it's not a valid parameter for Memory.search()
+        search_params.pop("output_format", None)
+
+        # Search memories using all parameters
+        search_results = MEMORY_INSTANCE.search(query=request.query, **search_params)
+
+        # Apply limit if specified (redundant safety check)
+        if request.limit and isinstance(search_results, list):
+            search_results = search_results[:request.limit]
+
+        # Process response based on output_format and enable_graph for V2 API compatibility
+        if hasattr(request, 'output_format') and request.output_format == "v1.1":
+            # Always return dict format with relations field for v1.1
+            if isinstance(search_results, dict) and "relations" in search_results:
+                final_response = search_results
+            else:
+                # If no relations in response, add empty relations field
+                if isinstance(search_results, dict) and "results" in search_results:
+                    search_results["relations"] = []
+                    final_response = search_results
+                else:
+                    final_response = {"results": search_results, "relations": []}
+        else:
+            # Return standard response format
+            final_response = search_results
+
+        return {
+            "results": final_response,
+            "total_count": len(search_results) if isinstance(search_results, list) else 1,
+            "query": request.query,
+            "limit": request.limit,
+            "filters_applied": processed_filters,
+            "advanced_retrieval": {
+                "keyword_search": request.keyword_search,
+                "rerank": request.rerank,
+                "filter_memories": request.filter_memories
+            }
+        }
+
+    except Exception as e:
+        logging.exception("Error in search_memories_v2:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/feedback/", summary="Submit feedback for a memory")
+def submit_feedback(feedback_request: FeedbackRequest):
+    """Submit feedback for a specific memory."""
+    VALID_FEEDBACK_VALUES = {"POSITIVE", "NEGATIVE", "VERY_NEGATIVE"}
+
+    memory_id = feedback_request.memory_id
+    feedback = feedback_request.feedback
+    feedback_reason = feedback_request.feedback_reason
+
+    # Validate feedback value
+    if feedback:
+        feedback = feedback.upper()
+        if feedback not in VALID_FEEDBACK_VALUES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid feedback value. Must be one of: {', '.join(VALID_FEEDBACK_VALUES)}"
+            )
+
+    # Verify memory exists
+    try:
+        MEMORY_INSTANCE.get(memory_id)
+    except Exception as e:
+        logging.exception(f"Error verifying memory {memory_id}:")
+        raise HTTPException(status_code=404, detail=f"Memory with ID {memory_id} not found.")
+
+    # Prepare feedback data
+    feedback_data = {
+        "memory_id": memory_id,
+        "feedback": feedback,
+        "feedback_reason": feedback_reason,
+        "timestamp": datetime.now().isoformat()
+    }
+
+    # Store feedback to file
+    feedback_file_path = "/app/data/feedback.json"
+
+    try:
+        # Ensure directory exists
+        Path("/app/data").mkdir(parents=True, exist_ok=True)
+
+        # Read existing feedback data or create new list
+        existing_feedback = []
+        if os.path.exists(feedback_file_path):
+            try:
+                with open(feedback_file_path, 'r') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)  # Shared lock for reading
+                    existing_feedback = json.load(f)
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Unlock
+            except (json.JSONDecodeError, FileNotFoundError):
+                existing_feedback = []
+
+        # Append new feedback
+        existing_feedback.append(feedback_data)
+
+        # Write back to file with exclusive lock
+        with open(feedback_file_path, 'w') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock for writing
+            json.dump(existing_feedback, f, indent=2)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)  # Unlock
+
+        return {"message": "Feedback submitted successfully", "feedback_id": len(existing_feedback)}
+
+    except Exception as e:
+        logging.exception("Error storing feedback:")
+        raise HTTPException(status_code=500, detail=f"Failed to store feedback: {str(e)}")
+
+
+@app.put("/v1/batch/", summary="Batch update memories")
+def batch_update_memories(batch_request: BatchUpdateRequest):
+    """Update multiple memories in batch. Maximum 1000 memories per request."""
+    memories = batch_request.memories
+
+    if len(memories) > 1000:
+        raise HTTPException(status_code=400, detail="Maximum 1000 memories allowed per batch operation.")
+
+    if not memories:
+        raise HTTPException(status_code=400, detail="At least one memory is required.")
+
+    # Validate that each memory has required fields
+    for i, memory in enumerate(memories):
+        if "memory_id" not in memory:
+            raise HTTPException(status_code=400, detail=f"Memory at index {i} missing 'memory_id' field.")
+        if "text" not in memory:
+            raise HTTPException(status_code=400, detail=f"Memory at index {i} missing 'text' field.")
+
+    successful_updates = []
+    failed_updates = []
+
+    def update_single_memory(memory):
+        try:
+            memory_id = memory["memory_id"]
+            text = memory["text"]
+            result = MEMORY_INSTANCE.update(memory_id=memory_id, data={"text": text})
+            return {"memory_id": memory_id, "status": "success", "result": result}
+        except Exception as e:
+            logging.exception(f"Error updating memory {memory.get('memory_id', 'unknown')}:")
+            return {"memory_id": memory.get("memory_id", "unknown"), "status": "failed", "error": str(e)}
+
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        try:
+            # Submit all tasks
+            future_to_memory = {executor.submit(update_single_memory, memory): memory for memory in memories}
+
+            # Collect results with timeout
+            for future in as_completed(future_to_memory, timeout=60):
+                result = future.result()
+                if result["status"] == "success":
+                    successful_updates.append(result)
+                else:
+                    failed_updates.append(result)
+
+        except Exception as e:
+            logging.exception("Error in batch update operation:")
+            raise HTTPException(status_code=500, detail=f"Batch operation failed: {str(e)}")
+
+    return {
+        "message": f"Batch update completed. {len(successful_updates)} successful, {len(failed_updates)} failed.",
+        "total_processed": len(memories),
+        "successful_count": len(successful_updates),
+        "failed_count": len(failed_updates),
+        "successful_updates": successful_updates,
+        "failed_updates": failed_updates
+    }
+
+
+@app.delete("/v1/batch/", summary="Batch delete memories")
+def batch_delete_memories(batch_request: BatchDeleteRequest):
+    """Delete multiple memories in batch. Maximum 1000 memories per request."""
+    memories = batch_request.memories
+
+    if len(memories) > 1000:
+        raise HTTPException(status_code=400, detail="Maximum 1000 memories allowed per batch operation.")
+
+    if not memories:
+        raise HTTPException(status_code=400, detail="At least one memory is required.")
+
+    # Validate that each memory has required fields
+    for i, memory in enumerate(memories):
+        if "memory_id" not in memory:
+            raise HTTPException(status_code=400, detail=f"Memory at index {i} missing 'memory_id' field.")
+
+    successful_deletions = []
+    failed_deletions = []
+
+    def delete_single_memory(memory):
+        try:
+            memory_id = memory["memory_id"]
+            MEMORY_INSTANCE.delete(memory_id=memory_id)
+            return {"memory_id": memory_id, "status": "success"}
+        except Exception as e:
+            logging.exception(f"Error deleting memory {memory.get('memory_id', 'unknown')}:")
+            return {"memory_id": memory.get("memory_id", "unknown"), "status": "failed", "error": str(e)}
+
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        try:
+            # Submit all tasks
+            future_to_memory = {executor.submit(delete_single_memory, memory): memory for memory in memories}
+
+            # Collect results with timeout
+            for future in as_completed(future_to_memory, timeout=60):
+                result = future.result()
+                if result["status"] == "success":
+                    successful_deletions.append(result)
+                else:
+                    failed_deletions.append(result)
+
+        except Exception as e:
+            logging.exception("Error in batch delete operation:")
+            raise HTTPException(status_code=500, detail=f"Batch operation failed: {str(e)}")
+
+    return {
+        "message": f"Batch delete completed. {len(successful_deletions)} successful, {len(failed_deletions)} failed.",
+        "total_processed": len(memories),
+        "successful_count": len(successful_deletions),
+        "failed_count": len(failed_deletions),
+        "successful_deletions": successful_deletions,
+        "failed_deletions": failed_deletions
+    }
+
+
+

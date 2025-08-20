@@ -9,6 +9,7 @@ import requests
 
 from mem0.client.project import AsyncProject, Project
 from mem0.client.utils import api_error_handler
+from mem0.client.validation import validate_custom_categories
 from mem0.memory.setup import get_user_id, setup_config
 from mem0.memory.telemetry import capture_client_event
 
@@ -18,6 +19,7 @@ warnings.filterwarnings("default", category=DeprecationWarning)
 
 # Setup user config
 setup_config()
+
 
 
 class MemoryClient:
@@ -127,20 +129,97 @@ class MemoryClient:
             raise ValueError(f"Error: {error_message}")
 
     @api_error_handler
-    def add(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+    def add(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
         """Add a new memory.
 
+        This method creates a new memory from the provided messages. The memory
+        will be automatically categorized based on the content, using either
+        project-level custom categories or the custom_categories parameter.
+
         Args:
-            messages: A list of message dictionaries.
-            **kwargs: Additional parameters such as user_id, agent_id, app_id,
-                      metadata, filters.
+            messages: A list of message dictionaries containing the conversation
+                     or content to be stored as memory. Each dictionary should
+                     have 'role' and 'content' keys.
+            custom_categories: Optional list of custom category dictionaries.
+                              Format: [{"category_name": "description"}, ...]
+                              When provided, overrides project-level categories
+                              for this specific memory creation. Each dictionary
+                              should have exactly one key-value pair where both
+                              key and value are strings.
+            **kwargs: Additional parameters such as:
+                     - user_id (str): Unique identifier for the user
+                     - agent_id (str): Unique identifier for the agent
+                     - app_id (str): Unique identifier for the application
+                     - metadata (dict): Additional metadata for the memory
+                     - filters (dict): Filters to apply during memory creation
+                     - version (str): API version control
+                     - timestamp (int): Unix timestamp (seconds since epoch) for when
+                                       the memory was created. If not provided, uses
+                                       current time. Must be a valid timestamp not in
+                                       the future.
 
         Returns:
-            A dictionary containing the API response.
+            A dictionary containing the API response with memory details,
+            including the memory ID, content, and assigned categories.
 
         Raises:
-            APIError: If the API request fails.
+            APIError: If the API request fails due to network issues,
+                     authentication problems, or server errors.
+            ValueError: If custom_categories format is invalid. This includes
+                       cases where the parameter is not a list, contains
+                       non-dictionary items, has empty dictionaries, or
+                       contains non-string keys/values.
+
+        Examples:
+            Basic usage:
+                >>> client = MemoryClient(api_key="your-api-key")
+                >>> messages = [{"role": "user", "content": "I love hiking"}]
+                >>> result = client.add(messages, user_id="alice")
+
+            With custom categories:
+                >>> custom_cats = [
+                ...     {"outdoor_activities": "Activities done outside"},
+                ...     {"personal_interests": "User's hobbies and interests"}
+                ... ]
+                >>> result = client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     custom_categories=custom_cats
+                ... )
+
+            With additional metadata:
+                >>> result = client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     metadata={"source": "mobile_app", "timestamp": "2024-01-01"}
+                ... )
+
+            With custom timestamp (for historical data):
+                >>> import datetime
+                >>> past_time = int(datetime.datetime(2023, 1, 1).timestamp())
+                >>> result = client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     timestamp=past_time
+                ... )
+
+        Note:
+            When custom_categories is provided, it takes precedence over any
+            project-level custom categories configured via client.project.update().
+            If neither custom_categories nor project-level categories are set,
+            the system will use default categories.
         """
+        # Validate custom_categories format if provided
+        if custom_categories is not None:
+            validate_custom_categories(custom_categories)
+            kwargs["custom_categories"] = custom_categories
+
         kwargs = self._prepare_params(kwargs)
         if kwargs.get("output_format") != "v1.1":
             kwargs["output_format"] = "v1.1"
@@ -230,7 +309,12 @@ class MemoryClient:
             query: The search query string.
             version: The API version to use for the search endpoint.
             **kwargs: Additional parameters such as user_id, agent_id, app_id,
-                      top_k, filters.
+                      top_k, filters, keyword_search, rerank, filter_memories.
+
+                      Advanced retrieval parameters:
+                      - keyword_search (bool): Enable BM25 keyword search for enhanced recall.
+                      - rerank (bool): Enable LLM-based reranking for improved relevance.
+                      - filter_memories (bool): Enable intelligent memory filtering for higher precision.
 
         Returns:
             A list of dictionaries containing search results.
@@ -240,6 +324,13 @@ class MemoryClient:
         """
         payload = {"query": query}
         params = self._prepare_params(kwargs)
+
+        # Handle advanced retrieval parameters explicitly
+        advanced_params = ['keyword_search', 'rerank', 'filter_memories']
+        for param in advanced_params:
+            if param in kwargs:
+                payload[param] = kwargs[param]
+
         payload.update(params)
         response = self.client.post(f"/{version}/memories/search/", json=payload)
         response.raise_for_status()
@@ -977,7 +1068,97 @@ class AsyncMemoryClient:
         await self.async_client.aclose()
 
     @api_error_handler
-    async def add(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+    async def add(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        custom_categories: Optional[List[Dict[str, str]]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Add a new memory asynchronously.
+
+        This async method creates a new memory from the provided messages. The memory
+        will be automatically categorized based on the content, using either
+        project-level custom categories or the custom_categories parameter.
+
+        Args:
+            messages: A list of message dictionaries containing the conversation
+                     or content to be stored as memory. Each dictionary should
+                     have 'role' and 'content' keys.
+            custom_categories: Optional list of custom category dictionaries.
+                              Format: [{"category_name": "description"}, ...]
+                              When provided, overrides project-level categories
+                              for this specific memory creation. Each dictionary
+                              should have exactly one key-value pair where both
+                              key and value are strings.
+            **kwargs: Additional parameters such as:
+                     - user_id (str): Unique identifier for the user
+                     - agent_id (str): Unique identifier for the agent
+                     - app_id (str): Unique identifier for the application
+                     - metadata (dict): Additional metadata for the memory
+                     - filters (dict): Filters to apply during memory creation
+                     - version (str): API version control
+                     - timestamp (int): Unix timestamp (seconds since epoch) for when
+                                       the memory was created. If not provided, uses
+                                       current time. Must be a valid timestamp not in
+                                       the future.
+
+        Returns:
+            A dictionary containing the API response with memory details,
+            including the memory ID, content, and assigned categories.
+
+        Raises:
+            APIError: If the API request fails due to network issues,
+                     authentication problems, or server errors.
+            ValueError: If custom_categories format is invalid. This includes
+                       cases where the parameter is not a list, contains
+                       non-dictionary items, has empty dictionaries, or
+                       contains non-string keys/values.
+
+        Examples:
+            Basic async usage:
+                >>> client = AsyncMemoryClient(api_key="your-api-key")
+                >>> messages = [{"role": "user", "content": "I love hiking"}]
+                >>> result = await client.add(messages, user_id="alice")
+
+            With custom categories:
+                >>> custom_cats = [
+                ...     {"outdoor_activities": "Activities done outside"},
+                ...     {"personal_interests": "User's hobbies and interests"}
+                ... ]
+                >>> result = await client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     custom_categories=custom_cats
+                ... )
+
+            With additional metadata:
+                >>> result = await client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     metadata={"source": "mobile_app", "timestamp": "2024-01-01"}
+                ... )
+
+            With custom timestamp (for historical data):
+                >>> import datetime
+                >>> past_time = int(datetime.datetime(2023, 1, 1).timestamp())
+                >>> result = await client.add(
+                ...     messages=messages,
+                ...     user_id="alice",
+                ...     timestamp=past_time
+                ... )
+
+        Note:
+            When custom_categories is provided, it takes precedence over any
+            project-level custom categories configured via client.project.update().
+            If neither custom_categories nor project-level categories are set,
+            the system will use default categories.
+        """
+        # Validate custom_categories format if provided
+        if custom_categories is not None:
+            validate_custom_categories(custom_categories)
+            kwargs["custom_categories"] = custom_categories
+
         kwargs = self._prepare_params(kwargs)
         if kwargs.get("output_format") != "v1.1":
             kwargs["output_format"] = "v1.1"
@@ -1037,8 +1218,35 @@ class AsyncMemoryClient:
 
     @api_error_handler
     async def search(self, query: str, version: str = "v1", **kwargs) -> List[Dict[str, Any]]:
+        """Search memories based on a query asynchronously.
+
+        Args:
+            query: The search query string.
+            version: The API version to use for the search endpoint.
+            **kwargs: Additional parameters such as user_id, agent_id, app_id,
+                      top_k, filters, keyword_search, rerank, filter_memories.
+
+                      Advanced retrieval parameters:
+                      - keyword_search (bool): Enable BM25 keyword search for enhanced recall.
+                      - rerank (bool): Enable LLM-based reranking for improved relevance.
+                      - filter_memories (bool): Enable intelligent memory filtering for higher precision.
+
+        Returns:
+            A list of dictionaries containing search results.
+
+        Raises:
+            APIError: If the API request fails.
+        """
         payload = {"query": query}
-        payload.update(self._prepare_params(kwargs))
+        params = self._prepare_params(kwargs)
+
+        # Handle advanced retrieval parameters explicitly
+        advanced_params = ['keyword_search', 'rerank', 'filter_memories']
+        for param in advanced_params:
+            if param in kwargs:
+                payload[param] = kwargs[param]
+
+        payload.update(params)
         response = await self.async_client.post(f"/{version}/memories/search/", json=payload)
         response.raise_for_status()
         if "metadata" in kwargs:
