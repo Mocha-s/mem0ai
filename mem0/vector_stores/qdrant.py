@@ -127,16 +127,48 @@ class Qdrant(VectorStoreBase):
             payloads (list, optional): List of payloads corresponding to vectors. Defaults to None.
             ids (list, optional): List of IDs corresponding to vectors. Defaults to None.
         """
+        import uuid
         logger.info(f"Inserting {len(vectors)} vectors into collection {self.collection_name}")
-        points = [
-            PointStruct(
-                id=idx if ids is None else ids[idx],
+        
+        points = []
+        for idx, vector in enumerate(vectors):
+            # Ensure proper ID format for Qdrant
+            if ids is None:
+                point_id = idx
+            else:
+                point_id = ids[idx]
+                # Validate ID format for Qdrant
+                if isinstance(point_id, str):
+                    try:
+                        # Try to parse as UUID
+                        uuid.UUID(point_id)
+                    except ValueError:
+                        # If not a valid UUID, use index instead and log warning
+                        logger.warning(f"Invalid UUID format for ID '{point_id}', using index {idx}")
+                        point_id = idx
+            
+            # Ensure vector dimensions match collection config
+            if len(vector) != self.embedding_model_dims:
+                logger.warning(f"Vector dimension {len(vector)} doesn't match expected {self.embedding_model_dims}")
+                # Resize vector to match expected dimensions
+                if len(vector) < self.embedding_model_dims:
+                    # Pad with zeros
+                    vector = vector + [0.0] * (self.embedding_model_dims - len(vector))
+                else:
+                    # Truncate
+                    vector = vector[:self.embedding_model_dims]
+            
+            points.append(PointStruct(
+                id=point_id,
                 vector=vector,
                 payload=payloads[idx] if payloads else {},
-            )
-            for idx, vector in enumerate(vectors)
-        ]
-        self.client.upsert(collection_name=self.collection_name, points=points)
+            ))
+        
+        try:
+            self.client.upsert(collection_name=self.collection_name, points=points)
+        except Exception as e:
+            logger.error(f"Failed to insert vectors into {self.collection_name}: {e}")
+            raise
 
     def _create_filter(self, filters: dict) -> Filter:
         """

@@ -9,7 +9,6 @@ Mem0 is an intelligent memory layer for AI assistants and agents that enables pe
 - `mem0/` - Core Python library providing the memory layer functionality
 - `embedchain/` - Legacy RAG framework (maintained for compatibility)
 - `server/` - FastAPI REST API server for standalone deployment
-- `mem0_mcp/` - Model Context Protocol (MCP) server for integration with AI tools
 - `mem0-ts/` - TypeScript client library
 - `vercel-ai-sdk/` - TypeScript provider for Vercel AI SDK integration
 - `examples/` - Example applications and integrations
@@ -38,6 +37,7 @@ make test
 make test-py-3.9
 make test-py-3.10  
 make test-py-3.11
+make test-py-3.12
 
 # Run single test file
 hatch run pytest tests/test_main.py
@@ -48,6 +48,9 @@ make build
 
 # Publish package
 make publish
+
+# Clean build artifacts
+make clean
 ```
 
 ### TypeScript Components
@@ -71,10 +74,10 @@ cd server
 pip install -r requirements.txt
 python main.py
 
-# MCP Server
-cd mem0_mcp
-pip install -r requirements.txt
-python run_server.py
+# Docker deployment
+cd server
+make build
+make run_local
 ```
 
 ## Core Architecture
@@ -124,6 +127,11 @@ results = memory.search(query="preferences", user_id="user123", filters={"topic"
 
 ## Testing Strategy
 
+### Test Configuration
+- Tests are configured via `pyproject.toml` with pytest options
+- Uses pytest with asyncio support for async component testing
+- Test environments for Python 3.9, 3.10, 3.11, and 3.12 via hatch
+
 ### Unit Tests
 - Component-specific tests in `tests/` directory
 - Mocked external dependencies (LLMs, vector stores)
@@ -133,6 +141,7 @@ results = memory.search(query="preferences", user_id="user123", filters={"topic"
 - End-to-end memory workflows
 - Real LLM and vector store integrations
 - Multi-component interaction testing
+- Cross-language consistency tests in `tests/integration/`
 
 ### Evaluation Framework
 - Benchmark suite in `evaluation/` directory
@@ -172,11 +181,6 @@ results = memory.search(query="preferences", user_id="user123", filters={"topic"
 - OpenAPI specification for API documentation
 - Docker containerization support
 
-### MCP Integration
-- Model Context Protocol server in `mem0_mcp/`
-- Context-aware identity management
-- Service-oriented architecture with dynamic tool loading
-
 ## Key Components to Understand
 
 ### Main Memory Interface
@@ -201,6 +205,3 @@ Graph memory functionality is implemented in `mem0/memory/graph_memory.py` and p
 
 ### API Server
 The FastAPI server in `server/main.py` provides REST endpoints for all memory operations and supports both sync and async operations.
-
-### MCP Server
-The MCP server in `mem0_mcp/src/server.py` implements the Model Context Protocol for integration with AI development tools like Claude Desktop.
