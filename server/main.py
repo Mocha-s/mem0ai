@@ -196,6 +196,14 @@ class MemoryCreate(BaseModel):
     app_id: Optional[str] = Field(None, description="Application identifier for tenant/app scoping.")
     metadata: Optional[Dict[str, Any]] = None
     infer: Optional[bool] = Field(None, description="Whether to extract facts from messages. Defaults to True.")
+    timestamp: Optional[int] = Field(
+        None,
+        description=(
+            "Optional Unix timestamp (seconds since epoch) to backdate the "
+            "created_at of memories produced by this call. Use for historical "
+            "imports. See docs/platform/features/timestamp.mdx."
+        ),
+    )
     memory_type: Optional[str] = Field(None, description="Type of memory to store (e.g. 'core').")
     prompt: Optional[str] = Field(None, description="Custom prompt to use for fact extraction.")
 

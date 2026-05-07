@@ -351,6 +351,39 @@ def _normalize_iso_timestamp_to_utc(timestamp: Optional[str]) -> Optional[str]:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+def _coerce_unix_timestamp_to_iso(value: Any) -> Optional[str]:
+    """Convert a Unix timestamp (seconds since epoch) to ISO 8601 UTC string.
+
+    Per docs/platform/features/timestamp.mdx, ``add(..., timestamp=...)`` takes
+    an integer Unix timestamp. We convert it to the ISO string used in payload
+    ``created_at``/``updated_at`` so chronological ordering and v2 time filters
+    behave identically to platform-side timestamps.
+
+    Accepts:
+    - int / float seconds-since-epoch
+    - numeric strings ("1672531200")
+    - already-ISO strings — passed through (post-normalized to UTC)
+
+    Returns None when ``value`` is None.
+    Raises ValueError for unparseable input so the caller can surface a
+    meaningful 400 to API clients rather than silently dropping the timestamp.
+    """
+    if value is None:
+        return None
+    # Pre-existing ISO strings: pass through (and UTC-normalize if tz-aware)
+    if isinstance(value, str) and not value.lstrip("-").isdigit():
+        try:
+            datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"timestamp must be Unix seconds or ISO 8601, got {value!r}") from exc
+        return _normalize_iso_timestamp_to_utc(value)
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"timestamp must be Unix seconds or ISO 8601, got {value!r}") from exc
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+
+
 def _build_filters_and_metadata(
     *,  # Enforce keyword-only arguments
     user_id: Optional[str] = None,
@@ -720,6 +753,7 @@ class Memory(MemoryBase):
         infer: bool = True,
         memory_type: Optional[str] = None,
         prompt: Optional[str] = None,
+        timestamp: Optional[Any] = None,
     ):
         """
         Create a new memory.
@@ -764,6 +798,12 @@ class Memory(MemoryBase):
             app_id=app_id,
             input_metadata=metadata,
         )
+
+        # Optional caller-supplied creation timestamp (Unix seconds or ISO 8601).
+        # When set, downstream insert paths skip auto-stamping created_at.
+        normalized_timestamp = _coerce_unix_timestamp_to_iso(timestamp)
+        if normalized_timestamp:
+            processed_metadata["created_at"] = normalized_timestamp
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
             raise Mem0ValidationError(
@@ -2320,6 +2360,7 @@ class AsyncMemory(MemoryBase):
         memory_type: Optional[str] = None,
         prompt: Optional[str] = None,
         llm=None,
+        timestamp: Optional[Any] = None,
     ):
         """
         Create a new memory asynchronously.
@@ -2341,6 +2382,10 @@ class AsyncMemory(MemoryBase):
         processed_metadata, effective_filters = _build_filters_and_metadata(
             user_id=user_id, agent_id=agent_id, run_id=run_id, app_id=app_id, input_metadata=metadata
         )
+
+        normalized_timestamp = _coerce_unix_timestamp_to_iso(timestamp)
+        if normalized_timestamp:
+            processed_metadata["created_at"] = normalized_timestamp
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
             raise ValueError(
