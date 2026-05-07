@@ -100,6 +100,68 @@ _SENSITIVE_SUFFIXES = (
 # Entity parameters that must be passed via filters, not top-level kwargs
 ENTITY_PARAMS = frozenset({"user_id", "agent_id", "run_id", "app_id"})
 
+# Default category catalog used when `MemoryConfig.custom_categories` is unset
+# but a caller still requests automatic categorization. Mirrors the 15 default
+# labels documented in docs/platform/features/custom-categories.mdx.
+DEFAULT_MEMORY_CATEGORIES = [
+    "personal_details", "family", "professional_details", "sports", "travel",
+    "food", "music", "health", "technology", "hobbies", "fashion",
+    "entertainment", "milestones", "user_preferences", "misc",
+]
+
+
+def _normalize_category_catalog(
+    catalog: Optional[List[Any]],
+) -> List[Dict[str, str]]:
+    """Coerce a category catalog into a list of {name, description} dicts.
+
+    Accepts:
+    - bare strings: ``"travel"`` -> ``{"name": "travel", "description": "travel"}``
+    - single-key dicts: ``{"travel": "Trips and ..."}`` -> ``{"name": "travel", "description": "Trips and ..."}``
+    - explicit dicts: ``{"name": "travel", "description": "..."}`` -> kept as is
+    """
+    normalized: List[Dict[str, str]] = []
+    for entry in catalog or []:
+        if isinstance(entry, str):
+            normalized.append({"name": entry, "description": entry})
+            continue
+        if isinstance(entry, dict):
+            if "name" in entry:
+                normalized.append({
+                    "name": str(entry["name"]),
+                    "description": str(entry.get("description", entry["name"])),
+                })
+            elif len(entry) == 1:
+                key, value = next(iter(entry.items()))
+                normalized.append({"name": str(key), "description": str(value)})
+            # Silently skip multi-key dicts that don't match either shape.
+    return normalized
+
+
+CATEGORY_CLASSIFICATION_SYSTEM_PROMPT = (
+    "You are a memory categorizer. Given a single short memory and a closed "
+    "list of categories with descriptions, pick zero or more categories that "
+    "apply. Return strict JSON: {\"categories\": [\"name1\", \"name2\"]}. Only "
+    "use names from the supplied list. Do not invent new ones. If nothing "
+    "applies, return {\"categories\": []}."
+)
+
+
+def _build_category_classification_prompt(
+    memory_text: str, catalog: List[Dict[str, str]]
+) -> List[Dict[str, str]]:
+    catalog_lines = "\n".join(
+        f"- {c['name']}: {c['description']}" for c in catalog
+    )
+    user = (
+        f"Memory:\n{memory_text}\n\nCategories:\n{catalog_lines}\n\n"
+        "Return JSON only."
+    )
+    return [
+        {"role": "system", "content": CATEGORY_CLASSIFICATION_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
 
 def _filter_has_entity_scope(node: Any) -> bool:
     """Recursively check whether a v2 filter tree contains at least one
@@ -854,6 +916,12 @@ class Memory(MemoryBase):
             if mem.get("attributed_to"):
                 mem_metadata["attributed_to"] = mem["attributed_to"]
 
+            # Project-scoped category classification (no-op when unset).
+            if "categories" not in mem_metadata:
+                classified = self._classify_memory_categories(text)
+                if classified is not None:
+                    mem_metadata["categories"] = classified
+
             records.append((memory_id, text, embed_map[text], mem_metadata))
 
         if not records:
@@ -1031,6 +1099,7 @@ class Memory(MemoryBase):
             "app_id",
             "actor_id",
             "role",
+            "categories",
         ]
 
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
@@ -1154,6 +1223,7 @@ class Memory(MemoryBase):
             "app_id",
             "actor_id",
             "role",
+            "categories",
         ]
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
 
@@ -1497,6 +1567,7 @@ class Memory(MemoryBase):
             "app_id",
             "actor_id",
             "role",
+            "categories",
         ]
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
 
@@ -1705,6 +1776,36 @@ class Memory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "sync"})
         return self.db.get_history(memory_id)
 
+    def _classify_memory_categories(self, data: str) -> Optional[List[str]]:
+        """Classify a single memory string against the project's category list.
+
+        Returns the matched category names (subset of the catalog), or None if
+        no project-level categories are configured. Errors during the LLM call
+        or JSON parsing degrade to ``[]`` rather than raising — categorization
+        is best-effort and must never block memory creation.
+
+        Per docs/platform/features/custom-categories.mdx, classification kicks
+        in once ``MemoryConfig.custom_categories`` is set.
+        """
+        catalog_raw = getattr(self.config, "custom_categories", None)
+        if not catalog_raw:
+            return None
+        catalog = _normalize_category_catalog(catalog_raw)
+        if not catalog:
+            return []
+        try:
+            response = self.llm.generate_response(
+                messages=_build_category_classification_prompt(data, catalog),
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(remove_code_blocks(response))
+            picked = parsed.get("categories", []) if isinstance(parsed, dict) else []
+            allowed = {c["name"] for c in catalog}
+            return [c for c in picked if isinstance(c, str) and c in allowed]
+        except Exception as e:
+            logger.warning(f"Category classification failed, skipping: {e}")
+            return []
+
     def _create_memory(self, data, existing_embeddings, metadata=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
@@ -1719,6 +1820,12 @@ class Memory(MemoryBase):
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
         new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+
+        # Project-scoped category classification (no-op when unset).
+        if "categories" not in new_metadata:
+            classified = self._classify_memory_categories(data)
+            if classified is not None:
+                new_metadata["categories"] = classified
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -2360,6 +2467,12 @@ class AsyncMemory(MemoryBase):
             if mem.get("attributed_to"):
                 mem_metadata["attributed_to"] = mem["attributed_to"]
 
+            # Project-scoped category classification (no-op when unset).
+            if "categories" not in mem_metadata:
+                classified = await self._classify_memory_categories(text)
+                if classified is not None:
+                    mem_metadata["categories"] = classified
+
             records.append((memory_id, text, embed_map[text], mem_metadata))
 
         if not records:
@@ -2538,6 +2651,7 @@ class AsyncMemory(MemoryBase):
             "app_id",
             "actor_id",
             "role",
+            "categories",
         ]
 
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
@@ -2661,6 +2775,7 @@ class AsyncMemory(MemoryBase):
             "app_id",
             "actor_id",
             "role",
+            "categories",
         ]
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
 
@@ -3004,6 +3119,7 @@ class AsyncMemory(MemoryBase):
             "app_id",
             "actor_id",
             "role",
+            "categories",
         ]
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", "attributed_to", *promoted_payload_keys}
 
@@ -3200,6 +3316,28 @@ class AsyncMemory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id, "sync_type": "async"})
         return await asyncio.to_thread(self.db.get_history, memory_id)
 
+    async def _classify_memory_categories(self, data: str) -> Optional[List[str]]:
+        """Async parity of Memory._classify_memory_categories — see that method."""
+        catalog_raw = getattr(self.config, "custom_categories", None)
+        if not catalog_raw:
+            return None
+        catalog = _normalize_category_catalog(catalog_raw)
+        if not catalog:
+            return []
+        try:
+            response = await asyncio.to_thread(
+                self.llm.generate_response,
+                messages=_build_category_classification_prompt(data, catalog),
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(remove_code_blocks(response))
+            picked = parsed.get("categories", []) if isinstance(parsed, dict) else []
+            allowed = {c["name"] for c in catalog}
+            return [c for c in picked if isinstance(c, str) and c in allowed]
+        except Exception as e:
+            logger.warning(f"Category classification failed, skipping: {e}")
+            return []
+
     async def _create_memory(self, data, existing_embeddings, metadata=None):
         logger.debug(f"Creating memory with {data=}")
         if data in existing_embeddings:
@@ -3215,6 +3353,11 @@ class AsyncMemory(MemoryBase):
             new_metadata["created_at"] = datetime.now(timezone.utc).isoformat()
         new_metadata["updated_at"] = new_metadata["created_at"]
         new_metadata["text_lemmatized"] = lemmatize_for_bm25(data)
+
+        if "categories" not in new_metadata:
+            classified = await self._classify_memory_categories(data)
+            if classified is not None:
+                new_metadata["categories"] = classified
 
         await asyncio.to_thread(
             self.vector_store.insert,
