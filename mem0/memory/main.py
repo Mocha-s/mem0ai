@@ -8,7 +8,7 @@ import uuid
 import warnings
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 
@@ -22,6 +22,7 @@ from mem0.configs.prompts import (
 )
 from mem0.exceptions import ValidationError as Mem0ValidationError
 from mem0.memory.base import MemoryBase
+from mem0.memory.criteria_scorer import CriteriaScorer
 from mem0.memory.setup import mem0_dir, setup_config
 from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import MEM0_TELEMETRY, capture_event
@@ -362,6 +363,12 @@ class Memory(MemoryBase):
                 config.reranker.provider,
                 config.reranker.config
             )
+
+        # Initialize criteria scorer if criteria are configured at the project/config level.
+        # Per-call criteria overrides build a transient scorer in search().
+        self.criteria_scorer = None
+        if self.config.retrieval_criteria:
+            self.criteria_scorer = CriteriaScorer(self.llm, self.config.retrieval_criteria)
 
         # Entity store is initialized lazily on first use
         self._entity_store = None
@@ -1157,6 +1164,8 @@ class Memory(MemoryBase):
         filters: Optional[Dict[str, Any]] = None,
         threshold: float = 0.1,
         rerank: bool = False,
+        use_criteria: Optional[bool] = None,
+        criteria: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ):
         """
@@ -1187,6 +1196,13 @@ class Memory(MemoryBase):
                 - {"NOT": [filter1]} - logical NOT
             threshold (float, optional): Minimum score for a memory to be included. Defaults to 0.1.
             rerank (bool, optional): Whether to rerank results. Defaults to False.
+            use_criteria (bool, optional): Whether to apply criteria-based scoring after vector
+                search. Defaults to None (auto: enabled when criteria are configured at the
+                project/config level OR provided via the ``criteria`` argument). Pass False to
+                opt out for a single call. Pass True with no criteria configured to raise.
+            criteria (list[dict], optional): Per-call override of project-level criteria. Each
+                entry must contain ``name``, ``description``, and may include ``weight``
+                (default 1.0).
 
         Returns:
             dict: A dictionary containing the search results under a "results" key.
@@ -1194,7 +1210,8 @@ class Memory(MemoryBase):
 
         Raises:
             ValueError: If filters doesn't contain at least one of user_id, agent_id, run_id, app_id,
-                or if threshold/top_k values are invalid.
+                if threshold/top_k values are invalid, or if ``use_criteria=True`` is requested
+                without any criteria configured.
         """
         # Reject top-level entity params - must use filters instead
         _reject_top_level_entity_params(kwargs, "search")
@@ -1263,6 +1280,15 @@ class Memory(MemoryBase):
                 original_memories = reranked_memories
             except Exception as e:
                 logger.warning(f"Reranking failed, using original results: {e}")
+
+        # Apply criteria-based scoring after rerank — criteria is the user's domain-specific
+        # final word, while rerank is generic relevance.
+        scorer = self._resolve_criteria_scorer(use_criteria=use_criteria, criteria=criteria)
+        if scorer is not None and original_memories:
+            try:
+                original_memories = scorer.score(query, original_memories)
+            except Exception as e:
+                logger.warning(f"Criteria scoring failed, using prior order: {e}")
 
         return {"results": original_memories}
 
@@ -1879,6 +1905,12 @@ class AsyncMemory(MemoryBase):
                 config.reranker.provider,
                 config.reranker.config
             )
+
+        # Initialize criteria scorer if criteria are configured at the project/config level.
+        # Per-call criteria overrides build a transient scorer in search().
+        self.criteria_scorer = None
+        if self.config.retrieval_criteria:
+            self.criteria_scorer = CriteriaScorer(self.llm, self.config.retrieval_criteria)
 
         if MEM0_TELEMETRY:
             telemetry_config = _safe_deepcopy_config(self.config.vector_store.config)
@@ -2623,6 +2655,8 @@ class AsyncMemory(MemoryBase):
         filters: Optional[Dict[str, Any]] = None,
         threshold: float = 0.1,
         rerank: bool = False,
+        use_criteria: Optional[bool] = None,
+        criteria: Optional[List[Dict[str, Any]]] = None,
         **kwargs,
     ):
         """
@@ -2653,6 +2687,11 @@ class AsyncMemory(MemoryBase):
                 - {"NOT": [filter1]} - logical NOT
             threshold (float, optional): Minimum score for a memory to be included. Defaults to 0.1.
             rerank (bool, optional): Whether to rerank results. Defaults to False.
+            use_criteria (bool, optional): Whether to apply criteria-based scoring after vector
+                search. Defaults to None (auto: enabled when criteria are configured at the
+                project/config level OR provided via the ``criteria`` argument). Pass False to
+                opt out for a single call. Pass True with no criteria configured to raise.
+            criteria (list[dict], optional): Per-call override of project-level criteria.
 
         Returns:
             dict: A dictionary containing the search results under a "results" key.
@@ -2734,6 +2773,14 @@ class AsyncMemory(MemoryBase):
                 original_memories = reranked_memories
             except Exception as e:
                 logger.warning(f"Reranking failed, using original results: {e}")
+
+        # Apply criteria-based scoring after rerank
+        scorer = self._resolve_criteria_scorer(use_criteria=use_criteria, criteria=criteria)
+        if scorer is not None and original_memories:
+            try:
+                original_memories = await asyncio.to_thread(scorer.score, query, original_memories)
+            except Exception as e:
+                logger.warning(f"Criteria scoring failed, using prior order: {e}")
 
         return {"results": original_memories}
 

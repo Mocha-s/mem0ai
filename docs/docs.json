@@ -166,6 +166,7 @@
                       "open-source/features/overview",
                       "open-source/features/metadata-filtering",
                       "open-source/features/reranker-search",
+                      "open-source/features/criteria-retrieval",
                       "open-source/features/async-memory",
                       "open-source/features/multimodal-support",
                       "open-source/features/custom-instructions",

@@ -29,9 +29,17 @@ import telemetry
 from routers import auth as auth_router
 from routers import api_keys as api_keys_router
 from routers import entities as entities_router
+from routers import projects as projects_router
 from routers import requests as requests_router
 from schemas import MessageResponse
-from server_state import get_current_config, get_memory_instance, initialize_state, set_session_factory, update_config
+from server_state import (
+    ProjectFieldsRejected,
+    get_current_config,
+    get_memory_instance,
+    initialize_state,
+    set_session_factory,
+    update_config,
+)
 
 load_dotenv()
 
@@ -162,6 +170,7 @@ app.add_middleware(
 app.include_router(auth_router.router)
 app.include_router(api_keys_router.router)
 app.include_router(entities_router.router)
+app.include_router(projects_router.router)
 app.include_router(requests_router.router)
 
 
@@ -205,6 +214,20 @@ class SearchBody(BaseModel):
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
     rerank: Optional[bool] = Field(
         None, description="Apply reranker if configured. Defaults to False."
+    )
+    use_criteria: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether to apply criteria-based scoring. Defaults to None — auto-enabled when "
+            "project criteria are configured. Pass false to opt out for this call."
+        ),
+    )
+    criteria: Optional[list] = Field(
+        None,
+        description=(
+            "Per-call override of project-level criteria. List of "
+            "{name, description, weight?} dicts."
+        ),
     )
 
 
@@ -331,9 +354,17 @@ def list_bundled_providers(_auth=Depends(verify_auth)):
 
 @app.post("/configure", summary="Configure Mem0")
 def set_config(config: Dict[str, Any], _auth=Depends(verify_auth)):
-    """Set memory configuration."""
+    """Set memory configuration.
+
+    Project-scoped fields (``retrieval_criteria``, ``custom_instructions``,
+    ``custom_categories``, ``multilingual``, ``decay``) are rejected here —
+    use ``PATCH /project`` instead.
+    """
     _validate_bundled_providers(config)
-    update_config(config)
+    try:
+        update_config(config)
+    except ProjectFieldsRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"message": "Configuration set successfully"}
 
 
@@ -455,6 +486,10 @@ def search_memories(body: SearchBody, _auth=Depends(verify_auth)):
             kwargs["threshold"] = body.threshold
         if body.rerank is not None:
             kwargs["rerank"] = body.rerank
+        if body.use_criteria is not None:
+            kwargs["use_criteria"] = body.use_criteria
+        if body.criteria is not None:
+            kwargs["criteria"] = body.criteria
         return get_memory_instance().search(query=body.query, **kwargs)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

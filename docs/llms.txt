@@ -215,6 +215,7 @@ If the user is on a pre-current major (Python < 2, TS < 3, or Platform `output_f
 - [Metadata Filtering](https://docs.mem0.ai/open-source/features/metadata-filtering) [OSS]: Use when filtering by custom metadata fields in self-hosted.
 - [Reranker Search](https://docs.mem0.ai/open-source/features/reranker-search) [OSS]: Use when improving OSS search quality with a reranker.
 - [Reranking](https://docs.mem0.ai/open-source/features/reranking) [OSS]: Use when configuring reranking end-to-end in OSS.
+- [Criteria-Based Retrieval (OSS)](https://docs.mem0.ai/open-source/features/criteria-retrieval) [OSS]: Use when re-ranking self-hosted memory search by your own weighted criteria.
 - [Async Memory](https://docs.mem0.ai/open-source/features/async-memory) [OSS]: Use when the self-hosted app needs `AsyncMemory`.
 - [OSS Multimodal Support (features)](https://docs.mem0.ai/open-source/features/multimodal-support) [OSS]: Use when handling images and PDFs self-hosted (feature guide).
 - [OSS Multimodal Support](https://docs.mem0.ai/open-source/multimodal-support) [OSS]: Use when handling images and PDFs self-hosted (concept overview).

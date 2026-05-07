@@ -1,0 +1,169 @@
+---
+title: Criteria-Based Retrieval
+description: Re-rank self-hosted memory search by your own weighted criteria.
+icon: "scale-balanced"
+---
+
+Criteria-based retrieval lets you rank memories by what matters in your domain — joy, urgency, confidence, risk — instead of relying on raw vector similarity. You define the criteria once on your project, and every `search()` call re-orders results to favour memories that score highly against those criteria.
+
+<Info>
+  **You'll use this when…**
+  - Two memories are equally similar to the query but one is more *useful* in your context (e.g. urgency in a support bot).
+  - You want consistent, application-specific ranking semantics across many queries.
+  - Generic relevance reranking isn't catching domain signals (tone, intent, behavioural cues).
+</Info>
+
+<Warning>
+  Criteria scoring runs an LLM call per candidate. Keep `top_k` small and use `use_criteria=False` for hot paths that don't need it.
+</Warning>
+
+<Note>
+  Criteria are project-scoped on the OSS server: a single default project owns them, and changes apply to every subsequent search until reconfigured. Multi-project support is planned but not yet shipped.
+</Note>
+
+---
+
+## Feature anatomy
+
+- **Criterion** — a `{name, description, weight}` triple. The LLM scores each memory against the description on a 0.0–1.0 scale; weight controls relative importance.
+- **Vector retrieval** — the usual top-K nearest-neighbour pass over your vector store.
+- **Optional reranker pass** — if a reranker is configured, it runs first; criteria scoring runs *after* it because criteria is the user's domain-specific final word.
+- **Weighted average** — final `criteria_score = Σ(score · weight) / Σ(weight)`, attached to each result alongside the raw vector `score`.
+- **Re-sort** — results are returned in descending `criteria_score` order.
+
+---
+
+## Configure it
+
+There are two paths: configure once on the project (recommended, persistent), or pass criteria per-call.
+
+### 1. On the project (recommended)
+
+#### Python SDK
+
+```python
+from mem0 import Memory
+
+config = {
+    "vector_store": {"provider": "qdrant", "config": {"host": "localhost", "port": 6333}},
+    "llm": {"provider": "openai", "config": {"model": "gpt-4o-mini"}},
+    "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+    "retrieval_criteria": [
+        {"name": "joy", "description": "positive emotions like happiness or excitement", "weight": 3},
+        {"name": "curiosity", "description": "questions or expressions of interest", "weight": 2},
+        {"name": "negativity", "description": "sadness, frustration, or sorrow", "weight": 1},
+    ],
+}
+
+m = Memory.from_config(config)
+results = m.search("Why am I feeling happy today?", filters={"user_id": "alice"})
+```
+
+#### REST API
+
+```bash
+curl -X PATCH http://localhost:8888/project \
+  -H "X-API-Key: m0sk_…" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "retrieval_criteria": [
+      {"name": "joy", "description": "positive emotions", "weight": 3},
+      {"name": "curiosity", "description": "questions or interest", "weight": 2}
+    ]
+  }'
+```
+
+The server reconstructs the active `Memory` instance immediately, so the next `POST /memories/search` already uses the new criteria.
+
+<Info icon="check">
+  Inspect each result for a `criteria_score` (the weighted average) and `criteria_breakdown` (per-criterion scores) to confirm criteria scoring fired.
+</Info>
+
+### 2. Per-call override
+
+Pass `criteria=[…]` directly to `search()` to override the project criteria for a single call:
+
+```python
+results = m.search(
+    "anything urgent?",
+    filters={"user_id": "alice"},
+    criteria=[{"name": "urgency", "description": "time-sensitive items", "weight": 5}],
+)
+```
+
+### 3. Disable for one call
+
+```python
+# Project criteria stay configured but skipped for this query
+fast = m.search("hello", filters={"user_id": "alice"}, use_criteria=False)
+```
+
+`use_criteria=True` with no criteria configured **and** no per-call override raises `ValueError` — be explicit when you want criteria.
+
+---
+
+## See it in action
+
+Add a few memories with different tones, then compare baseline vs. criteria-based search:
+
+```python
+messages = [
+    {"role": "user", "content": "What a beautiful sunny day! I feel refreshed."},
+    {"role": "user", "content": "I've always wondered how storms form."},
+    {"role": "user", "content": "It's been raining for days and everything feels heavier."},
+    {"role": "user", "content": "Finally I get to draw today — I'm super happy!"},
+]
+m.add(messages, user_id="alice")
+
+# With criteria configured (joy=3, curiosity=2, negativity=1):
+results = m.search("Why am I feeling happy today?", filters={"user_id": "alice"})
+
+for r in results["results"]:
+    print(round(r["criteria_score"], 3), "·", r["memory"])
+```
+
+You should see joyful memories rise to the top, curiosity memories sit in the middle, and the rainy-day memory sink — even though the raw vector similarity ordering is different.
+
+---
+
+## Migration from `/configure`
+
+In earlier OSS versions, project-scoped fields could be smuggled into `POST /configure` and would silently land in the global `config_overrides` blob. As of the Project abstraction, **`/configure` rejects them with a 400** pointing at `PATCH /project`:
+
+```
+POST /configure  body: {"retrieval_criteria": [...]}
+→ 400 Fields ['retrieval_criteria'] are project-scoped. Use PATCH /project to update them.
+```
+
+If you upgraded an existing deployment, the migration that introduces the projects table also lifts any stranded fields out of `config_overrides` into the new project row, so no data is lost.
+
+---
+
+## Verify the feature is working
+
+- `GET /project` returns the criteria you set — every field round-trips cleanly.
+- Search response items include both `score` (raw vector) and `criteria_score` (post-criteria). If `criteria_score` is missing, criteria didn't fire — check that criteria are configured and `use_criteria` isn't `False`.
+- Compare the same query with `use_criteria=True` vs. `use_criteria=False` and watch the ordering change.
+- Watch the LLM-call count rise with `top_k` — that's the cost lever.
+
+---
+
+## Best practices
+
+1. **Start with 2–3 criteria** so the LLM has a clear scoring task. Adding too many dilutes signal.
+2. **Make descriptions concrete and disjoint.** "joy" and "positivity" overlap and confuse scoring; pick one.
+3. **Reach for higher weights** to amplify the criterion that matters most — weights are relative, not absolute.
+4. **Cap `top_k`** when criteria are on. Each candidate is one LLM call; 10 is a reasonable upper bound for online queries.
+5. **Use `use_criteria=False` for hot paths** where you only need quick lookups.
+6. **Pair with a reranker** when you want generic relevance + domain criteria in the same response — reranker runs first, criteria runs after.
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Configure OSS Components" icon="sliders" href="/open-source/configuration">
+    Wire up the LLM the criteria scorer uses for grading.
+  </Card>
+  <Card title="Reranker-Enhanced Search" icon="ranking-star" href="/open-source/features/reranker-search">
+    Combine criteria scoring with reranker-driven ordering.
+  </Card>
+</CardGroup>

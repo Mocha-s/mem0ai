@@ -7,6 +7,7 @@ __pycache__/
 # Self-hosted server local runtime state
 server/history/
 server/.env
+server/mem0_src/
 
 # C extensions
 *.so

@@ -2,6 +2,17 @@
 
 This file provides context for AI coding assistants (Claude Code, Cursor, GitHub Copilot, Codex, etc.) working with the Mem0 repository.
 
+> **Note on naming:** `CLAUDE.md` at the repo root is a symlink to this file (`AGENTS.md`). Edit `AGENTS.md` directly — do not replace the symlink with a separate file, or the two will drift.
+
+## Related Root Files
+
+| File | Purpose |
+|------|---------|
+| `README.md` | User-facing project overview, quickstart, and feature list |
+| `CONTRIBUTING.md` | Contributor entry point — points into `docs/contributing/` |
+| `LLM.md` | Project description optimized for LLM ingestion (used by external tooling) |
+| `MIGRATION_GUIDE_v1.0.md` | Breaking-change migration path for the 1.0 release |
+
 ## Project Overview
 
 **Mem0** ("mem-zero") is an intelligent memory layer for AI agents and assistants. It provides persistent, personalized memory via both a hosted platform API and self-hosted open-source SDKs.
@@ -58,7 +69,7 @@ openclaw/   ──▶ mem0ai (npm)
 
 ### Requirements
 
-- **Python**: 3.9+ (3.10+ for CLI)
+- **Python**: 3.10+ (dev environments are 3.10/3.11/3.12; `pyproject.toml` advertises 3.9 as a minimum runtime, but no `dev_py_3_9` env or `test-py-3.9` target is defined)
 - **Node.js**: v18+ (v20 or v22 recommended)
 - **pnpm**: v10+ (`npm install -g pnpm@10`) — used for all TypeScript packages
 - **Hatch**: Python build/environment tool (`pip install hatch`)
@@ -68,7 +79,8 @@ openclaw/   ──▶ mem0ai (npm)
 
 ```bash
 # Python SDK
-hatch shell dev_py_3_11           # creates environment with all deps
+hatch shell dev_py_3_11           # creates environment with all deps (or dev_py_3_10, dev_py_3_12)
+make install_all                  # optional: pip install every provider extra (groq, ollama, faiss, neo4j, kuzu, ...)
 pre-commit install                # install git hooks
 
 # TypeScript packages
@@ -84,7 +96,9 @@ cd openclaw && pnpm install       # OpenClaw plugin
 
 ```bash
 # Environment setup (uses Hatch)
-hatch shell dev_py_3_11           # or dev_py_3_9, dev_py_3_10, dev_py_3_12
+hatch shell dev_py_3_11           # or dev_py_3_10, dev_py_3_12 (no 3.9 env)
+make install                      # alternative: hatch env create
+make install_all                  # one-shot pip install of every provider extra (groq, ollama, faiss, neo4j, kuzu, etc.)
 
 # Linting and formatting
 make lint                          # ruff check
@@ -93,14 +107,15 @@ make sort                          # isort mem0/
 
 # Tests
 make test                          # pytest tests/
-make test-py-3.9                   # test specific Python version (3.9–3.12)
+make test-py-3.10                  # test on a specific Python (3.10/3.11/3.12 — no 3.9 target)
 
 # Build and publish
 make build                         # hatch build
 make publish                       # hatch publish
+make clean                         # remove dist/
 ```
 
-- **Python:** 3.9, 3.10, 3.11, 3.12
+- **Python:** 3.10, 3.11, 3.12 (dev/test). `pyproject.toml` lists 3.9 as a runtime minimum, but no dev env or test target exists for it.
 - **Linter/formatter:** Ruff (line length **120**)
 - **Import sorting:** isort (`profile = "black"`)
 - **Test framework:** pytest (with pytest-mock, pytest-asyncio)

@@ -2,10 +2,6 @@ FROM python:3.12
 
 WORKDIR /app
 
-# Install Poetry
-RUN curl -sSL https://install.python-poetry.org | python3 -
-ENV PATH="/root/.local/bin:$PATH"
-
 # Copy requirements first for better caching
 COPY server/requirements.txt .
 RUN pip install -r requirements.txt

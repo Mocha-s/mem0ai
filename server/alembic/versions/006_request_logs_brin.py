@@ -17,10 +17,18 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        # BRIN is Postgres-only; on SQLite (used by tests) we simply leave the
+        # default btree index in place.
+        return
     op.drop_index("ix_request_logs_created_at", table_name="request_logs")
     op.execute("CREATE INDEX ix_request_logs_created_at ON request_logs USING BRIN (created_at)")
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
     op.drop_index("ix_request_logs_created_at", table_name="request_logs")
     op.create_index("ix_request_logs_created_at", "request_logs", ["created_at"])

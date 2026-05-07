@@ -1,8 +1,11 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Any, List
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import JSON
 
 from db import Base
 
@@ -13,6 +16,11 @@ def _utcnow() -> datetime:
 
 def _new_uuid() -> uuid.UUID:
     return uuid.uuid4()
+
+
+# JSONB on Postgres, plain JSON on SQLite (used by tests). The variant has the
+# same semantics; PG-only operators are not relied on at the ORM level.
+_JsonType = JSON().with_variant(JSONB(), "postgresql")
 
 
 class User(Base):
@@ -71,4 +79,27 @@ class Settings(Base):
         DateTime(timezone=True),
         default=_utcnow,
         onupdate=_utcnow,
+    )
+
+
+class Project(Base):
+    """OSS project entity. Today there is exactly one row with ``is_default=true``;
+    the schema is multi-row from day one so future multi-project support does not
+    require a migration."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    custom_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custom_categories: Mapped[List[Any] | None] = mapped_column(_JsonType, nullable=True)
+    retrieval_criteria: Mapped[List[Any] | None] = mapped_column(_JsonType, nullable=True)
+    multilingual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    decay: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )

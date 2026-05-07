@@ -1,8 +1,9 @@
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from mem0.configs.criteria import CriterionConfig, coerce_criteria
 from mem0.configs.rerankers.config import RerankerConfig
 from mem0.embeddings.configs import EmbedderConfig
 from mem0.llms.configs import LlmConfig
@@ -55,6 +56,31 @@ class MemoryConfig(BaseModel):
         description="Custom instructions for fact extraction",
         default=None,
     )
+    custom_categories: Optional[List[Union[str, Dict[str, str]]]] = Field(
+        description="Project-scoped categories that constrain or guide memory classification.",
+        default=None,
+    )
+    retrieval_criteria: Optional[List[CriterionConfig]] = Field(
+        description="Project-scoped weighted criteria used by criteria-based search scoring.",
+        default=None,
+    )
+    multilingual: bool = Field(
+        description="Whether to use the input language for memory storage and retrieval.",
+        default=False,
+    )
+    decay: bool = Field(
+        description=(
+            "Toggle Memory Decay. When True, search-time ranking boosts recently-used memories "
+            "and gently dampens stale ones; when False, ranking is restored to the pre-decay "
+            "behaviour. Off by default."
+        ),
+        default=False,
+    )
+
+    @field_validator("retrieval_criteria", mode="before")
+    @classmethod
+    def _coerce_retrieval_criteria(cls, value):
+        return coerce_criteria(value)
 
 
 class AzureConfig(BaseModel):
