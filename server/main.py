@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -176,7 +176,14 @@ app.include_router(requests_router.router)
 
 class Message(BaseModel):
     role: str = Field(..., description="Role of the message (user or assistant).")
-    content: str = Field(..., description="Message content.")
+    content: Union[str, Dict[str, Any], List[Any]] = Field(
+        ...,
+        description=(
+            "Message content. Plain string for normal messages, or a dict "
+            "(``{type: image_url|mdx_url|pdf_url, ...}``) for multimodal "
+            "payloads. See docs/platform/features/multimodal-support.mdx."
+        ),
+    )
     name: Optional[str] = Field(
         None,
         description=(

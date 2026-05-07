@@ -167,9 +167,89 @@ def get_image_description(image_obj, llm, vision_details):
     return response
 
 
-def parse_vision_messages(messages, llm=None, vision_details="auto"):
+def _fetch_url_text(url: str, max_bytes: int = 5 * 1024 * 1024) -> str:
+    """Fetch a remote text resource (mdx/txt) and decode it.
+
+    Caps download at ``max_bytes`` to bound memory cost. Per
+    docs/platform/features/multimodal-support.mdx, ``mdx_url`` carries
+    either an http(s) URL or a raw base64 string.
     """
-    Parse the vision messages from the messages
+    import base64
+    import binascii
+    from urllib.parse import urlparse
+    from urllib.request import Request, urlopen
+
+    if url.startswith("http://") or url.startswith("https://"):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Unsupported URL scheme for mdx_url: {parsed.scheme}")
+        req = Request(url, headers={"User-Agent": "mem0-multimodal/1.0"})
+        with urlopen(req, timeout=30) as resp:
+            data = resp.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise ValueError(f"Document at {url} exceeds {max_bytes} bytes")
+        return data.decode("utf-8", errors="replace")
+
+    payload = url.split(",", 1)[-1] if url.startswith("data:") else url
+    try:
+        decoded = base64.b64decode(payload, validate=False)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("mdx_url must be an http(s) URL or base64 string") from exc
+    if len(decoded) > max_bytes:
+        raise ValueError(f"Decoded document exceeds {max_bytes} bytes")
+    return decoded.decode("utf-8", errors="replace")
+
+
+def _extract_pdf_text(url: str, max_bytes: int = 25 * 1024 * 1024) -> str:
+    """Fetch and extract text from a PDF URL.
+
+    Requires the optional ``pypdf`` dependency; raises a ``RuntimeError``
+    with installation instructions when missing.
+    """
+    import io
+    from urllib.parse import urlparse
+    from urllib.request import Request, urlopen
+
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise RuntimeError(
+            "PDF extraction requires the optional 'pypdf' dependency. "
+            "Install with: pip install pypdf"
+        ) from exc
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported URL scheme for pdf_url: {parsed.scheme}")
+    req = Request(url, headers={"User-Agent": "mem0-multimodal/1.0"})
+    with urlopen(req, timeout=60) as resp:
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"PDF at {url} exceeds {max_bytes} bytes")
+
+    reader = PdfReader(io.BytesIO(data))
+    pages = []
+    for page in reader.pages:
+        try:
+            pages.append(page.extract_text() or "")
+        except Exception:
+            continue
+    return "\n\n".join(p for p in pages if p.strip())
+
+
+def parse_vision_messages(messages, llm=None, vision_details="auto"):
+    """Parse multimodal messages into plain-text content.
+
+    Per docs/platform/features/multimodal-support.mdx, message ``content`` may
+    be a dict whose ``type`` field selects the multimodal handler:
+
+    - ``image_url`` — needs vision-capable ``llm``. When ``llm`` is None we
+      fall back to a placeholder string instead of raising, so non-vision
+      OSS callers don't crash.
+    - ``mdx_url`` — fetched (http/https) or base64-decoded as text.
+    - ``pdf_url`` — fetched and PDF-decoded (requires optional ``pypdf``).
+
+    Plain text content passes through unchanged.
     """
     returned_messages = []
     for msg in messages:
@@ -177,22 +257,40 @@ def parse_vision_messages(messages, llm=None, vision_details="auto"):
             returned_messages.append(msg)
             continue
 
-        # Handle message content
-        if isinstance(msg["content"], list):
-            # Multiple image URLs in content
+        content = msg["content"]
+
+        if isinstance(content, list):
             description = get_image_description(msg, llm, vision_details)
             returned_messages.append({"role": msg["role"], "content": description})
-        elif isinstance(msg["content"], dict) and msg["content"].get("type") == "image_url":
-            # Single image content
-            image_url = msg["content"]["image_url"]["url"]
-            try:
-                description = get_image_description(image_url, llm, vision_details)
+            continue
+
+        if isinstance(content, dict):
+            ctype = content.get("type")
+            if ctype == "image_url":
+                image_url = content["image_url"]["url"]
+                if llm is None:
+                    returned_messages.append(
+                        {"role": msg["role"], "content": f"[image: {image_url}]"}
+                    )
+                    continue
+                try:
+                    description = get_image_description(image_url, llm, vision_details)
+                except Exception as e:
+                    raise Exception(f"Error while processing image {image_url}: {e}")
                 returned_messages.append({"role": msg["role"], "content": description})
-            except Exception:
-                raise Exception(f"Error while downloading {image_url}.")
-        else:
-            # Regular text content
+                continue
+            if ctype == "mdx_url":
+                doc_url = content["mdx_url"]["url"]
+                returned_messages.append({"role": msg["role"], "content": _fetch_url_text(doc_url)})
+                continue
+            if ctype == "pdf_url":
+                pdf_url = content["pdf_url"]["url"]
+                returned_messages.append({"role": msg["role"], "content": _extract_pdf_text(pdf_url)})
+                continue
             returned_messages.append(msg)
+            continue
+
+        returned_messages.append(msg)
 
     return returned_messages
 
