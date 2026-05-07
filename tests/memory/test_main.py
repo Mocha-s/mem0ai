@@ -663,3 +663,132 @@ async def test_async_update_preserves_actor_id_when_different_actor_updates(mock
     assert stored["actor_id"] == "Alice"
 
 
+class TestFeedback:
+    """Tests for sync Memory.feedback alignment with platform contract."""
+
+    @pytest.fixture
+    def memory(self, mocker):
+        _setup_mocks(mocker)
+        m = Memory()
+        m.vector_store = MagicMock()
+        return m
+
+    def _existing(self, payload):
+        existing = MagicMock()
+        existing.payload = payload
+        return existing
+
+    def test_feedback_records_positive(self, memory):
+        memory.vector_store.get.return_value = self._existing({"data": "hi", "user_id": "u1"})
+
+        result = memory.feedback("mem-1", feedback="POSITIVE", feedback_reason="useful")
+
+        payload = memory.vector_store.update.call_args.kwargs["payload"]
+        assert payload["feedback"] == "POSITIVE"
+        assert payload["feedback_reason"] == "useful"
+        assert "feedback_updated_at" in payload
+        assert payload["data"] == "hi"
+        assert payload["user_id"] == "u1"
+        assert result == {"message": "Feedback recorded successfully!"}
+
+    def test_feedback_lowercase_input_is_normalized(self, memory):
+        memory.vector_store.get.return_value = self._existing({"data": "hi"})
+
+        memory.feedback("mem-1", feedback="negative")
+
+        payload = memory.vector_store.update.call_args.kwargs["payload"]
+        assert payload["feedback"] == "NEGATIVE"
+        assert "feedback_reason" not in payload
+
+    def test_feedback_none_clears_existing(self, memory):
+        memory.vector_store.get.return_value = self._existing(
+            {
+                "data": "hi",
+                "feedback": "NEGATIVE",
+                "feedback_reason": "stale",
+                "feedback_updated_at": "2026-01-01T00:00:00+00:00",
+            }
+        )
+
+        memory.feedback("mem-1", feedback=None, feedback_reason=None)
+
+        payload = memory.vector_store.update.call_args.kwargs["payload"]
+        assert "feedback" not in payload
+        assert "feedback_reason" not in payload
+        assert "feedback_updated_at" not in payload
+        assert payload["data"] == "hi"
+
+    def test_feedback_invalid_value_raises(self, memory):
+        memory.vector_store.get.return_value = self._existing({"data": "hi"})
+
+        with pytest.raises(ValueError, match="feedback must be one of"):
+            memory.feedback("mem-1", feedback="MEH")
+
+        memory.vector_store.update.assert_not_called()
+
+    def test_feedback_missing_memory_raises(self, memory):
+        memory.vector_store.get.return_value = None
+
+        with pytest.raises(ValueError, match="not found"):
+            memory.feedback("missing", feedback="POSITIVE")
+
+        memory.vector_store.update.assert_not_called()
+
+    def test_feedback_replaces_old_reason(self, memory):
+        memory.vector_store.get.return_value = self._existing(
+            {"data": "hi", "feedback": "POSITIVE", "feedback_reason": "old"}
+        )
+
+        memory.feedback("mem-1", feedback="POSITIVE")
+
+        payload = memory.vector_store.update.call_args.kwargs["payload"]
+        assert payload["feedback"] == "POSITIVE"
+        assert "feedback_reason" not in payload
+
+
+@pytest.mark.asyncio
+class TestAsyncFeedback:
+    """Tests for async AsyncMemory.feedback."""
+
+    @pytest.fixture
+    def memory(self, mocker):
+        _setup_mocks(mocker)
+        m = AsyncMemory()
+        m.vector_store = MagicMock()
+        return m
+
+    def _existing(self, payload):
+        existing = MagicMock()
+        existing.payload = payload
+        return existing
+
+    async def test_async_feedback_records_positive(self, memory):
+        memory.vector_store.get.return_value = self._existing({"data": "hi"})
+
+        result = await memory.feedback("mem-1", feedback="POSITIVE", feedback_reason="useful")
+
+        payload = memory.vector_store.update.call_args.kwargs["payload"]
+        assert payload["feedback"] == "POSITIVE"
+        assert payload["feedback_reason"] == "useful"
+        assert result == {"message": "Feedback recorded successfully!"}
+
+    async def test_async_feedback_invalid_value_raises(self, memory):
+        memory.vector_store.get.return_value = self._existing({"data": "hi"})
+
+        with pytest.raises(ValueError, match="feedback must be one of"):
+            await memory.feedback("mem-1", feedback="WRONG")
+
+        memory.vector_store.update.assert_not_called()
+
+    async def test_async_feedback_clears_when_none(self, memory):
+        memory.vector_store.get.return_value = self._existing(
+            {"data": "hi", "feedback": "NEGATIVE", "feedback_reason": "x"}
+        )
+
+        await memory.feedback("mem-1", feedback=None)
+
+        payload = memory.vector_store.update.call_args.kwargs["payload"]
+        assert "feedback" not in payload
+        assert "feedback_reason" not in payload
+
+

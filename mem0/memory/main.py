@@ -1795,6 +1795,61 @@ class Memory(MemoryBase):
         self._update_memory(memory_id, data, existing_embeddings, metadata)
         return {"message": "Memory updated successfully!"}
 
+    def feedback(
+        self,
+        memory_id: str,
+        feedback: Optional[str] = None,
+        feedback_reason: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Record feedback on a memory.
+
+        Feedback is stored on the memory's payload so it surfaces alongside the
+        memory in get / search / get_all (under the ``metadata`` field). Pass
+        ``feedback=None`` and ``feedback_reason=None`` to clear existing
+        feedback. Mirrors the platform ``MemoryClient.feedback`` contract.
+
+        Args:
+            memory_id: ID of the memory to give feedback on.
+            feedback: One of ``"POSITIVE"``, ``"NEGATIVE"``, ``"VERY_NEGATIVE"``,
+                or ``None`` to clear. Case-insensitive.
+            feedback_reason: Optional explanation for the feedback.
+
+        Returns:
+            dict: Success message.
+        """
+        VALID_FEEDBACK_VALUES = {"POSITIVE", "NEGATIVE", "VERY_NEGATIVE"}
+
+        feedback = feedback.upper() if feedback else None
+        if feedback is not None and feedback not in VALID_FEEDBACK_VALUES:
+            raise ValueError(f"feedback must be one of {', '.join(sorted(VALID_FEEDBACK_VALUES))} or None")
+
+        capture_event(
+            "mem0.feedback",
+            self,
+            {"memory_id": memory_id, "feedback": feedback, "sync_type": "sync"},
+        )
+
+        existing_memory = self.vector_store.get(vector_id=memory_id)
+        if existing_memory is None:
+            raise ValueError(f"Memory with id {memory_id} not found. Please provide a valid 'memory_id'")
+
+        new_payload = deepcopy(existing_memory.payload) if existing_memory.payload else {}
+        if feedback is None:
+            new_payload.pop("feedback", None)
+            new_payload.pop("feedback_reason", None)
+            new_payload.pop("feedback_updated_at", None)
+        else:
+            new_payload["feedback"] = feedback
+            if feedback_reason is not None:
+                new_payload["feedback_reason"] = feedback_reason
+            else:
+                new_payload.pop("feedback_reason", None)
+            new_payload["feedback_updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        self.vector_store.update(vector_id=memory_id, payload=new_payload)
+        return {"message": "Feedback recorded successfully!"}
+
     def delete(self, memory_id):
         """
         Delete a memory by ID.
@@ -3364,6 +3419,50 @@ class AsyncMemory(MemoryBase):
 
         await self._update_memory(memory_id, data, existing_embeddings, metadata)
         return {"message": "Memory updated successfully!"}
+
+    async def feedback(
+        self,
+        memory_id: str,
+        feedback: Optional[str] = None,
+        feedback_reason: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Record feedback on a memory asynchronously.
+
+        Async counterpart of :meth:`Memory.feedback`. See that method for the
+        full contract.
+        """
+        VALID_FEEDBACK_VALUES = {"POSITIVE", "NEGATIVE", "VERY_NEGATIVE"}
+
+        feedback = feedback.upper() if feedback else None
+        if feedback is not None and feedback not in VALID_FEEDBACK_VALUES:
+            raise ValueError(f"feedback must be one of {', '.join(sorted(VALID_FEEDBACK_VALUES))} or None")
+
+        capture_event(
+            "mem0.feedback",
+            self,
+            {"memory_id": memory_id, "feedback": feedback, "sync_type": "async"},
+        )
+
+        existing_memory = await asyncio.to_thread(self.vector_store.get, vector_id=memory_id)
+        if existing_memory is None:
+            raise ValueError(f"Memory with id {memory_id} not found. Please provide a valid 'memory_id'")
+
+        new_payload = deepcopy(existing_memory.payload) if existing_memory.payload else {}
+        if feedback is None:
+            new_payload.pop("feedback", None)
+            new_payload.pop("feedback_reason", None)
+            new_payload.pop("feedback_updated_at", None)
+        else:
+            new_payload["feedback"] = feedback
+            if feedback_reason is not None:
+                new_payload["feedback_reason"] = feedback_reason
+            else:
+                new_payload.pop("feedback_reason", None)
+            new_payload["feedback_updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        await asyncio.to_thread(self.vector_store.update, vector_id=memory_id, payload=new_payload)
+        return {"message": "Feedback recorded successfully!"}
 
     async def delete(self, memory_id):
         """

@@ -266,6 +266,21 @@ class GenerateInstructionsRequest(BaseModel):
     use_case: str = Field(..., description="Description of what the user will use Mem0 for.")
 
 
+class FeedbackBody(BaseModel):
+    """Body for ``POST /memories/{memory_id}/feedback``.
+
+    Mirrors the platform feedback contract. Pass ``feedback=None`` and
+    ``feedback_reason=None`` to clear existing feedback for the memory.
+    """
+    feedback: Optional[str] = Field(
+        None,
+        description="One of POSITIVE, NEGATIVE, VERY_NEGATIVE (case-insensitive), or None to clear.",
+    )
+    feedback_reason: Optional[str] = Field(
+        None, description="Optional explanation for the feedback."
+    )
+
+
 def _redact_config(value: Any, key: str | None = None) -> Any:
     if isinstance(value, dict):
         return {item_key: _redact_config(item_value, item_key) for item_key, item_value in value.items()}
@@ -537,6 +552,34 @@ def memory_history(memory_id: str, _auth=Depends(verify_auth)):
     """Retrieve memory history."""
     try:
         return get_memory_instance().history(memory_id=memory_id)
+    except Exception:
+        raise upstream_error()
+
+
+@app.post(
+    "/memories/{memory_id}/feedback",
+    summary="Record feedback on a memory",
+    response_model=MessageResponse,
+)
+def memory_feedback(memory_id: str, body: FeedbackBody, _auth=Depends(verify_auth)):
+    """Record POSITIVE / NEGATIVE / VERY_NEGATIVE feedback on a memory.
+
+    Mirrors the platform ``POST /v1/feedback/`` contract. The feedback is
+    stored on the memory's payload and surfaces in subsequent
+    ``GET /memories/{memory_id}`` responses under ``metadata``.
+
+    Pass ``feedback=null`` and ``feedback_reason=null`` to clear existing
+    feedback for this memory.
+    """
+    try:
+        get_memory_instance().feedback(
+            memory_id=memory_id,
+            feedback=body.feedback,
+            feedback_reason=body.feedback_reason,
+        )
+        return MessageResponse(message="Feedback recorded successfully")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         raise upstream_error()
 
