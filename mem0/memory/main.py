@@ -101,6 +101,27 @@ _SENSITIVE_SUFFIXES = (
 ENTITY_PARAMS = frozenset({"user_id", "agent_id", "run_id", "app_id"})
 
 
+def _filter_has_entity_scope(node: Any) -> bool:
+    """Recursively check whether a v2 filter tree contains at least one
+    entity-id (user_id/agent_id/run_id/app_id) anywhere — including inside
+    root-level AND/OR/NOT logical wrappers.
+
+    Per docs/platform/features/v2-memory-filters.mdx, the root must be a
+    logical operator, so entity scope may live nested under AND/OR/NOT
+    rather than at the top level. We accept either form.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ENTITY_PARAMS and value not in (None, ""):
+                return True
+            if key in ("AND", "OR", "NOT") and _filter_has_entity_scope(value):
+                return True
+        return False
+    if isinstance(node, list):
+        return any(_filter_has_entity_scope(item) for item in node)
+    return False
+
+
 def _reject_top_level_entity_params(kwargs: Dict[str, Any], method_name: str) -> None:
     """Reject top-level entity parameters - must use filters instead."""
     invalid_keys = ENTITY_PARAMS & set(kwargs.keys())
@@ -1007,6 +1028,7 @@ class Memory(MemoryBase):
             "user_id",
             "agent_id",
             "run_id",
+            "app_id",
             "actor_id",
             "role",
         ]
@@ -1081,7 +1103,7 @@ class Memory(MemoryBase):
             )
 
         # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id", "app_id")):
+        if not _filter_has_entity_scope(effective_filters):
             raise ValueError(
                 "filters must contain at least one of: user_id, agent_id, run_id, app_id. "
                 "Example: filters={'user_id': 'u1'}"
@@ -1129,6 +1151,7 @@ class Memory(MemoryBase):
             "user_id",
             "agent_id",
             "run_id",
+            "app_id",
             "actor_id",
             "role",
         ]
@@ -1237,7 +1260,7 @@ class Memory(MemoryBase):
             effective_filters["app_id"] = _validate_and_trim_entity_id(
                 effective_filters["app_id"], "app_id"
             )
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id", "app_id")):
+        if not _filter_has_entity_scope(effective_filters):
             raise ValueError(
                 "filters must contain at least one of: user_id, agent_id, run_id, app_id. "
                 "Example: filters={'user_id': 'u1'}"
@@ -1335,14 +1358,25 @@ class Memory(MemoryBase):
                 else:
                     target[key] = value
 
+        def process_subfilter(condition: Dict[str, Any]) -> Dict[str, Any]:
+            """Process a sub-filter dict — handles both leaf field conditions
+            (e.g. {"app_id": "ios_app"}) and nested logical operators
+            (e.g. {"NOT": {"app_id": "work_app"}}, {"OR": [...]})."""
+            result: Dict[str, Any] = {}
+            for sub_key, sub_value in condition.items():
+                if sub_key in ("AND", "OR", "NOT"):
+                    merge_filters(result, self._process_metadata_filters({sub_key: sub_value}))
+                else:
+                    merge_filters(result, process_condition(sub_key, sub_value))
+            return result
+
         for key, value in metadata_filters.items():
             if key == "AND":
                 # Logical AND: combine multiple conditions
                 if not isinstance(value, list):
                     raise ValueError("AND operator requires a list of conditions")
                 for condition in value:
-                    for sub_key, sub_value in condition.items():
-                        merge_filters(processed_filters, process_condition(sub_key, sub_value))
+                    merge_filters(processed_filters, process_subfilter(condition))
             elif key == "OR":
                 # Logical OR: Pass through to vector store for implementation-specific handling
                 if not isinstance(value, list) or not value:
@@ -1350,20 +1384,22 @@ class Memory(MemoryBase):
                 # Store OR conditions in a way that vector stores can interpret
                 processed_filters["$or"] = []
                 for condition in value:
-                    or_condition = {}
-                    for sub_key, sub_value in condition.items():
-                        merge_filters(or_condition, process_condition(sub_key, sub_value))
-                    processed_filters["$or"].append(or_condition)
+                    processed_filters["$or"].append(process_subfilter(condition))
             elif key == "NOT":
-                # Logical NOT: Pass through to vector store for implementation-specific handling
-                if not isinstance(value, list) or not value:
-                    raise ValueError("NOT operator requires a non-empty list of conditions")
+                # Logical NOT — per docs the value is typically a single filter
+                # dict ({"NOT": {"app_id": "work_app"}}) but we also accept a
+                # non-empty list of dicts for backward compatibility.
+                if isinstance(value, dict):
+                    conditions = [value]
+                elif isinstance(value, list) and value:
+                    conditions = value
+                else:
+                    raise ValueError(
+                        "NOT operator requires either a filter dict or a non-empty list of filter dicts"
+                    )
                 processed_filters["$not"] = []
-                for condition in value:
-                    not_condition = {}
-                    for sub_key, sub_value in condition.items():
-                        merge_filters(not_condition, process_condition(sub_key, sub_value))
-                    processed_filters["$not"].append(not_condition)
+                for condition in conditions:
+                    processed_filters["$not"].append(process_subfilter(condition))
             else:
                 merge_filters(processed_filters, process_condition(key, value))
 
@@ -1458,6 +1494,7 @@ class Memory(MemoryBase):
             "user_id",
             "agent_id",
             "run_id",
+            "app_id",
             "actor_id",
             "role",
         ]
@@ -2498,6 +2535,7 @@ class AsyncMemory(MemoryBase):
             "user_id",
             "agent_id",
             "run_id",
+            "app_id",
             "actor_id",
             "role",
         ]
@@ -2572,7 +2610,7 @@ class AsyncMemory(MemoryBase):
             )
 
         # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id", "app_id")):
+        if not _filter_has_entity_scope(effective_filters):
             raise ValueError(
                 "filters must contain at least one of: user_id, agent_id, run_id, app_id. "
                 "Example: filters={'user_id': 'u1'}"
@@ -2620,6 +2658,7 @@ class AsyncMemory(MemoryBase):
             "user_id",
             "agent_id",
             "run_id",
+            "app_id",
             "actor_id",
             "role",
         ]
@@ -2727,7 +2766,7 @@ class AsyncMemory(MemoryBase):
             )
 
         # Validate filters contains at least one entity ID
-        if not any(key in effective_filters for key in ("user_id", "agent_id", "run_id", "app_id")):
+        if not _filter_has_entity_scope(effective_filters):
             raise ValueError(
                 "filters must contain at least one of: user_id, agent_id, run_id, app_id. "
                 "Example: filters={'user_id': 'u1'}"
@@ -2827,14 +2866,25 @@ class AsyncMemory(MemoryBase):
                 else:
                     target[key] = value
 
+        def process_subfilter(condition: Dict[str, Any]) -> Dict[str, Any]:
+            """Process a sub-filter dict — handles both leaf field conditions
+            (e.g. {"app_id": "ios_app"}) and nested logical operators
+            (e.g. {"NOT": {"app_id": "work_app"}}, {"OR": [...]})."""
+            result: Dict[str, Any] = {}
+            for sub_key, sub_value in condition.items():
+                if sub_key in ("AND", "OR", "NOT"):
+                    merge_filters(result, self._process_metadata_filters({sub_key: sub_value}))
+                else:
+                    merge_filters(result, process_condition(sub_key, sub_value))
+            return result
+
         for key, value in metadata_filters.items():
             if key == "AND":
                 # Logical AND: combine multiple conditions
                 if not isinstance(value, list):
                     raise ValueError("AND operator requires a list of conditions")
                 for condition in value:
-                    for sub_key, sub_value in condition.items():
-                        merge_filters(processed_filters, process_condition(sub_key, sub_value))
+                    merge_filters(processed_filters, process_subfilter(condition))
             elif key == "OR":
                 # Logical OR: Pass through to vector store for implementation-specific handling
                 if not isinstance(value, list) or not value:
@@ -2842,20 +2892,22 @@ class AsyncMemory(MemoryBase):
                 # Store OR conditions in a way that vector stores can interpret
                 processed_filters["$or"] = []
                 for condition in value:
-                    or_condition = {}
-                    for sub_key, sub_value in condition.items():
-                        merge_filters(or_condition, process_condition(sub_key, sub_value))
-                    processed_filters["$or"].append(or_condition)
+                    processed_filters["$or"].append(process_subfilter(condition))
             elif key == "NOT":
-                # Logical NOT: Pass through to vector store for implementation-specific handling
-                if not isinstance(value, list) or not value:
-                    raise ValueError("NOT operator requires a non-empty list of conditions")
+                # Logical NOT — per docs the value is typically a single filter
+                # dict ({"NOT": {"app_id": "work_app"}}) but we also accept a
+                # non-empty list of dicts for backward compatibility.
+                if isinstance(value, dict):
+                    conditions = [value]
+                elif isinstance(value, list) and value:
+                    conditions = value
+                else:
+                    raise ValueError(
+                        "NOT operator requires either a filter dict or a non-empty list of filter dicts"
+                    )
                 processed_filters["$not"] = []
-                for condition in value:
-                    not_condition = {}
-                    for sub_key, sub_value in condition.items():
-                        merge_filters(not_condition, process_condition(sub_key, sub_value))
-                    processed_filters["$not"].append(not_condition)
+                for condition in conditions:
+                    processed_filters["$not"].append(process_subfilter(condition))
             else:
                 merge_filters(processed_filters, process_condition(key, value))
 
@@ -2949,6 +3001,7 @@ class AsyncMemory(MemoryBase):
             "user_id",
             "agent_id",
             "run_id",
+            "app_id",
             "actor_id",
             "role",
         ]
