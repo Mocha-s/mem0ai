@@ -100,6 +100,45 @@ _SENSITIVE_SUFFIXES = (
 # Entity parameters that must be passed via filters, not top-level kwargs
 ENTITY_PARAMS = frozenset({"user_id", "agent_id", "run_id", "app_id"})
 
+
+def _partition_group_chat_messages(
+    messages: List[Dict[str, Any]],
+) -> "tuple[Dict[tuple, List[Dict[str, Any]]], List[Dict[str, Any]]]":
+    """Group messages by (role, name) for per-speaker extraction.
+
+    Per docs/platform/features/group-chat.mdx, when messages carry a ``name``
+    field each speaker's memories are attributed and stored separately:
+    ``user`` role names land as ``user_id``, ``assistant``/``agent`` names as
+    ``agent_id``. Unnamed messages fall back to caller scope.
+
+    Returns:
+        (speaker_groups, unnamed_messages) where ``speaker_groups`` maps
+        ``(role, name)`` tuples to that speaker's contiguous messages.
+    """
+    from collections import OrderedDict
+
+    groups: "OrderedDict[tuple, List[Dict[str, Any]]]" = OrderedDict()
+    unnamed: List[Dict[str, Any]] = []
+    for m in messages:
+        if not isinstance(m, dict) or not m.get("role") or m.get("content") is None:
+            continue
+        if m["role"] == "system":
+            continue
+        name = m.get("name")
+        if not name:
+            unnamed.append(m)
+            continue
+        key = (m["role"], name)
+        groups.setdefault(key, []).append(m)
+    return groups, unnamed
+
+
+def _is_group_chat(messages: Any) -> bool:
+    """Detect group-chat by presence of any ``name`` on a list message."""
+    if not isinstance(messages, list):
+        return False
+    return any(isinstance(m, dict) and m.get("name") for m in messages)
+
 # Default category catalog used when `MemoryConfig.custom_categories` is unset
 # but a caller still requests automatic categorization. Mirrors the 15 default
 # labels documented in docs/platform/features/custom-categories.mdx.
@@ -757,8 +796,39 @@ class Memory(MemoryBase):
         else:
             messages = parse_vision_messages(messages)
 
+        # Group-chat dispatch — per docs/platform/features/group-chat.mdx, when any
+        # message has a ``name`` field, attribute each speaker's memories separately.
+        if infer and _is_group_chat(messages):
+            return {"results": self._add_group_chat(messages, processed_metadata, effective_filters, prompt=prompt)}
+
         vector_store_result = self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, prompt=prompt)
         return {"results": vector_store_result}
+
+    def _add_group_chat(self, messages, metadata, filters, prompt=None):
+        """Per-speaker extraction for group-chat. Each speaker's slice runs
+        through ``_add_to_vector_store`` with their name overriding the
+        appropriate scope key (``user_id`` for ``user`` role, ``agent_id`` for
+        ``assistant``/``agent`` roles). Caller-supplied ``run_id``/``app_id``
+        propagate through every per-speaker call."""
+        groups, _ = _partition_group_chat_messages(messages)
+        if not groups:
+            return []
+        combined = []
+        for (role, name), speaker_msgs in groups.items():
+            scope_key = "agent_id" if role in ("assistant", "agent") else "user_id"
+            sub_metadata = deepcopy(metadata)
+            sub_filters = dict(filters)
+            sub_metadata[scope_key] = name
+            sub_filters[scope_key] = name
+            # Drop the opposite identity if the caller supplied it — speaker
+            # name owns this scope dimension for this slice.
+            opposite = "user_id" if scope_key == "agent_id" else "agent_id"
+            sub_metadata.pop(opposite, None)
+            sub_filters.pop(opposite, None)
+            combined.extend(
+                self._add_to_vector_store(speaker_msgs, sub_metadata, sub_filters, True, prompt=prompt)
+            )
+        return combined
 
     def _add_to_vector_store(self, messages, metadata, filters, infer, prompt=None):
         if not infer:
@@ -2302,8 +2372,31 @@ class AsyncMemory(MemoryBase):
         else:
             messages = parse_vision_messages(messages)
 
+        if infer and _is_group_chat(messages):
+            return {"results": await self._add_group_chat(messages, processed_metadata, effective_filters, prompt=prompt)}
+
         vector_store_result = await self._add_to_vector_store(messages, processed_metadata, effective_filters, infer, prompt=prompt)
         return {"results": vector_store_result}
+
+    async def _add_group_chat(self, messages, metadata, filters, prompt=None):
+        """Async parity of Memory._add_group_chat — see that method."""
+        groups, _ = _partition_group_chat_messages(messages)
+        if not groups:
+            return []
+        combined = []
+        for (role, name), speaker_msgs in groups.items():
+            scope_key = "agent_id" if role in ("assistant", "agent") else "user_id"
+            sub_metadata = deepcopy(metadata)
+            sub_filters = dict(filters)
+            sub_metadata[scope_key] = name
+            sub_filters[scope_key] = name
+            opposite = "user_id" if scope_key == "agent_id" else "agent_id"
+            sub_metadata.pop(opposite, None)
+            sub_filters.pop(opposite, None)
+            combined.extend(
+                await self._add_to_vector_store(speaker_msgs, sub_metadata, sub_filters, True, prompt=prompt)
+            )
+        return combined
 
     async def _add_to_vector_store(
         self,

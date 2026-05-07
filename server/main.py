@@ -177,6 +177,15 @@ app.include_router(requests_router.router)
 class Message(BaseModel):
     role: str = Field(..., description="Role of the message (user or assistant).")
     content: str = Field(..., description="Message content.")
+    name: Optional[str] = Field(
+        None,
+        description=(
+            "Optional speaker name for group-chat scenarios. When set, the "
+            "speaker's memories are partitioned: ``user`` names land as "
+            "``user_id`` and ``assistant``/``agent`` names land as "
+            "``agent_id``. See docs/platform/features/group-chat.mdx."
+        ),
+    )
 
 
 class MemoryCreate(BaseModel):
