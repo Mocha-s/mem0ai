@@ -41,8 +41,13 @@ export default function MemoriesPage() {
     refetch,
   } = useApiQuery<Memory[]>(
     async () => {
-      const params = userId.trim() ? { user_id: userId.trim() } : undefined;
-      const res = await api.get(MEMORY_ENDPOINTS.BASE, { params });
+      // The server's POST /memories/list expects a v2 filter dict in the body.
+      // When the user types a user_id, scope to it; otherwise list across all
+      // users/agents/apps (wildcard non-null on user_id).
+      const filters = userId.trim()
+        ? { user_id: userId.trim() }
+        : { OR: [{ user_id: "*" }, { agent_id: "*" }, { run_id: "*" }, { app_id: "*" }] };
+      const res = await api.post(MEMORY_ENDPOINTS.LIST, { filters });
       const raw = res.data?.results ?? res.data ?? [];
       return Array.isArray(raw) ? raw : [];
     },

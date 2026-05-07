@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 from contextlib import contextmanager
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -218,6 +219,186 @@ class PGVector(VectorStoreBase):
                     data,
                 )
 
+    # ISO 8601 datetime detection — when both sides look like timestamps we cast
+    # to timestamptz so range comparisons sort by time, not lexicographically.
+    _ISO_DATETIME_RE = re.compile(
+        r"^\d{4}-\d{2}-\d{2}"
+        r"([T ]\d{2}:\d{2}(:\d{2})?"
+        r"(\.\d+)?"
+        r"(Z|[+-]\d{2}:?\d{2})?"
+        r")?$"
+    )
+
+    _COMPARISON_OPS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+    _LOGICAL_KEYS = {"AND": "AND", "OR": "OR", "NOT": "NOT", "$and": "AND", "$or": "OR", "$not": "NOT"}
+
+    def _build_filter_sql(self, filters: Optional[dict]) -> Optional[Tuple[sql.Composable, list]]:
+        """
+        Translate v2 filter dict into a SQL clause body (without the leading keyword).
+
+        Supports:
+        - Logical operators: AND/OR/NOT (and the $and/$or/$not aliases that
+          Memory._process_metadata_filters emits).
+        - Comparison operators per field: eq, ne, gt, gte, lt, lte, in, nin,
+          contains, icontains.
+        - Wildcard ``"*"`` — non-null check via ``payload->>%s IS NOT NULL``.
+        - Special field ``memory_ids`` — routed to the table's ``id`` column
+          rather than payload.
+        - Special field ``metadata`` — its sub-keys are addressed as top-level
+          payload keys (OSS stores metadata flat in the payload, not nested).
+
+        Returns ``(clause, params)`` where ``clause`` is the body alone (callers
+        prepend ``WHERE`` or ``AND``), or ``None`` when the filter dict produced
+        no clause — letting callers skip emitting any filter SQL.
+        """
+        if not filters:
+            return None
+        body, params = self._compile_node(filters)
+        if body is None:
+            return None
+        return body, params
+
+    def _compile_node(self, node: dict) -> Tuple[Optional[sql.Composable], list]:
+        """Compile a filter dict node into (clause, params). Returns (None, []) when empty."""
+        clauses: List[sql.Composable] = []
+        params: list = []
+        # Track logical keys we've already handled so we don't double-process
+        # both AND/$and forms when both happen to be present.
+        seen_logical: set[str] = set()
+        for key, value in node.items():
+            normalized = self._LOGICAL_KEYS.get(key)
+            if normalized is not None:
+                if normalized in seen_logical:
+                    continue
+                seen_logical.add(normalized)
+                logical_clause, logical_params = self._compile_logical(normalized, value)
+                if logical_clause is not None:
+                    clauses.append(logical_clause)
+                    params.extend(logical_params)
+            else:
+                leaf_clause, leaf_params = self._compile_leaf(key, value)
+                if leaf_clause is not None:
+                    clauses.append(leaf_clause)
+                    params.extend(leaf_params)
+        if not clauses:
+            return None, []
+        if len(clauses) == 1:
+            return clauses[0], params
+        return sql.SQL("(") + sql.SQL(" AND ").join(clauses) + sql.SQL(")"), params
+
+    def _compile_logical(self, op: str, value: Any) -> Tuple[Optional[sql.Composable], list]:
+        if not isinstance(value, list):
+            raise ValueError(f"{op} filter value must be a list of filter dicts, got {type(value).__name__}")
+        sub_clauses: List[sql.Composable] = []
+        sub_params: list = []
+        for i, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise ValueError(f"{op} filter list item at index {i} must be a dict, got {type(item).__name__}")
+            child_clause, child_params = self._compile_node(item)
+            if child_clause is not None:
+                sub_clauses.append(child_clause)
+                sub_params.extend(child_params)
+        if not sub_clauses:
+            return None, []
+        joiner = sql.SQL(" AND ") if op in ("AND", "NOT") else sql.SQL(" OR ")
+        joined = joiner.join(sub_clauses)
+        if op == "NOT":
+            return sql.SQL("NOT (") + joined + sql.SQL(")"), sub_params
+        return sql.SQL("(") + joined + sql.SQL(")"), sub_params
+
+    def _compile_leaf(self, key: str, value: Any) -> Tuple[Optional[sql.Composable], list]:
+        # memory_ids → table id column, not payload
+        if key == "memory_ids":
+            ids = value.get("in") if isinstance(value, dict) else value
+            if not isinstance(ids, (list, tuple)):
+                raise ValueError("memory_ids filter requires a list (raw or via {'in': [...]})")
+            return sql.SQL("id::text = ANY(%s)"), [[str(x) for x in ids]]
+
+        # metadata special key — sub-fields live at payload top-level in OSS
+        if key == "metadata" and isinstance(value, dict):
+            sub_node = dict(value)  # treat metadata sub-dict as another node
+            return self._compile_node(sub_node)
+
+        # wildcard: any non-null value present
+        if value == "*":
+            return sql.SQL("payload->>%s IS NOT NULL"), [key]
+
+        # raw list shorthand: {field: [a, b]} → IN
+        if isinstance(value, list):
+            if not value:
+                # An empty IN list cannot match anything; emit a false predicate.
+                return sql.SQL("FALSE"), []
+            return sql.SQL("payload->>%s = ANY(%s)"), [key, [str(x) for x in value]]
+
+        # simple equality
+        if not isinstance(value, dict):
+            return sql.SQL("payload->>%s = %s"), [key, str(value)]
+
+        # operator dict
+        op_clauses: List[sql.Composable] = []
+        op_params: list = []
+        for op, op_val in value.items():
+            clause, p = self._compile_operator(key, op, op_val)
+            op_clauses.append(clause)
+            op_params.extend(p)
+        if len(op_clauses) == 1:
+            return op_clauses[0], op_params
+        return sql.SQL("(") + sql.SQL(" AND ").join(op_clauses) + sql.SQL(")"), op_params
+
+    def _compile_operator(self, key: str, op: str, op_val: Any) -> Tuple[sql.Composable, list]:
+        if op == "eq":
+            return sql.SQL("payload->>%s = %s"), [key, str(op_val)]
+        if op == "ne":
+            # ne should match rows where the field differs OR is missing/null,
+            # mirroring how the Platform handles "not equal" against absent fields.
+            return (
+                sql.SQL("(payload->>%s IS DISTINCT FROM %s)"),
+                [key, str(op_val)],
+            )
+        if op == "in":
+            if not isinstance(op_val, (list, tuple)):
+                raise ValueError(f"'in' on field '{key}' requires a list, got {type(op_val).__name__}")
+            if not op_val:
+                return sql.SQL("FALSE"), []
+            return sql.SQL("payload->>%s = ANY(%s)"), [key, [str(x) for x in op_val]]
+        if op == "nin":
+            if not isinstance(op_val, (list, tuple)):
+                raise ValueError(f"'nin' on field '{key}' requires a list, got {type(op_val).__name__}")
+            if not op_val:
+                return sql.SQL("TRUE"), []
+            return (
+                sql.SQL("(payload->>%s IS NULL OR payload->>%s <> ALL(%s))"),
+                [key, key, [str(x) for x in op_val]],
+            )
+        if op in self._COMPARISON_OPS:
+            sym = self._COMPARISON_OPS[op]
+            # Numeric comparison if value is numeric; timestamptz if it parses as ISO datetime.
+            if isinstance(op_val, bool):
+                # bool is subclass of int but we shouldn't compare like numbers
+                return (
+                    sql.SQL("payload->>%s ") + sql.SQL(sym) + sql.SQL(" %s"),
+                    [key, str(op_val)],
+                )
+            if isinstance(op_val, (int, float)):
+                return (
+                    sql.SQL("(payload->>%s)::numeric ") + sql.SQL(sym) + sql.SQL(" %s::numeric"),
+                    [key, str(op_val)],
+                )
+            if isinstance(op_val, str) and self._ISO_DATETIME_RE.match(op_val):
+                return (
+                    sql.SQL("(payload->>%s)::timestamptz ") + sql.SQL(sym) + sql.SQL(" %s::timestamptz"),
+                    [key, op_val],
+                )
+            return (
+                sql.SQL("payload->>%s ") + sql.SQL(sym) + sql.SQL(" %s"),
+                [key, str(op_val)],
+            )
+        if op == "contains":
+            return sql.SQL("payload->>%s LIKE %s"), [key, f"%{op_val}%"]
+        if op == "icontains":
+            return sql.SQL("payload->>%s ILIKE %s"), [key, f"%{op_val}%"]
+        raise ValueError(f"Unsupported metadata filter operator: {op}")
+
     def search(
         self,
         query: str,
@@ -237,15 +418,13 @@ class PGVector(VectorStoreBase):
         Returns:
             list: Search results.
         """
-        filter_conditions = []
-        filter_params = []
-
-        if filters:
-            for k, v in filters.items():
-                filter_conditions.append("payload->>%s = %s")
-                filter_params.extend([k, str(v)])
-
-        filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        compiled = self._build_filter_sql(filters)
+        if compiled is not None:
+            filter_body, filter_params = compiled
+            filter_clause = sql.SQL("WHERE ") + filter_body
+        else:
+            filter_params = []
+            filter_clause = sql.SQL("")
 
         with self._get_cursor() as cur:
             cur.execute(
@@ -274,15 +453,15 @@ class PGVector(VectorStoreBase):
         Returns:
             List[OutputData]: Search results ranked by text relevance.
         """
-        filter_conditions = []
-        filter_params = []
-
-        if filters:
-            for k, v in filters.items():
-                filter_conditions.append("payload->>%s = %s")
-                filter_params.extend([k, str(v)])
-
-        filter_clause = sql.SQL("AND " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        compiled = self._build_filter_sql(filters)
+        if compiled is not None:
+            filter_body, filter_params = compiled
+            # keyword_search already has a WHERE clause for the FTS predicate, so
+            # we tack the filter body on with an AND prefix.
+            filter_clause = sql.SQL("AND ") + filter_body
+        else:
+            filter_params = []
+            filter_clause = sql.SQL("")
 
         try:
             with self._get_cursor() as cur:
@@ -423,15 +602,13 @@ class PGVector(VectorStoreBase):
         Returns:
             List[OutputData]: List of vectors.
         """
-        filter_conditions = []
-        filter_params = []
-
-        if filters:
-            for k, v in filters.items():
-                filter_conditions.append("payload->>%s = %s")
-                filter_params.extend([k, str(v)])
-
-        filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        compiled = self._build_filter_sql(filters)
+        if compiled is not None:
+            filter_body, filter_params = compiled
+            filter_clause = sql.SQL("WHERE ") + filter_body
+        else:
+            filter_params = []
+            filter_clause = sql.SQL("")
 
         with self._get_cursor() as cur:
             cur.execute(

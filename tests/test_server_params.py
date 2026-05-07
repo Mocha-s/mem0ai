@@ -2,8 +2,7 @@
 
 Verifies that the Pydantic request models in server/main.py correctly accept
 and forward all parameters supported by the underlying Memory class methods,
-including top_k, threshold, infer, memory_type, and prompt — which were
-previously silently dropped by Pydantic v2's default extra='ignore' behavior.
+including top_k, threshold, infer, memory_type, prompt, and the v2 filter dict.
 """
 
 import importlib
@@ -28,7 +27,7 @@ def _mock_memory():
     mock_instance.add.return_value = {"results": [{"id": "mem-1", "event": "ADD", "memory": "test"}]}
     mock_instance.search.return_value = [{"id": "mem-1", "memory": "test", "score": 0.9}]
     mock_instance.get.return_value = {"id": "mem-1", "memory": "test memory"}
-    mock_instance.get_all.return_value = [{"id": "mem-1", "memory": "test memory"}]
+    mock_instance.get_all.return_value = {"results": [{"id": "mem-1", "memory": "test memory"}]}
     mock_instance.update.return_value = {"message": "Memory updated"}
     mock_instance.history.return_value = [{"id": "mem-1", "old_memory": "a", "new_memory": "b"}]
     mock_instance.delete.return_value = None
@@ -55,69 +54,77 @@ def mock_memory(_mock_memory):
 
 
 # ===========================================================================
-# SearchRequest: top_k parameter
+# SearchBody: top_k parameter
 # ===========================================================================
 
 class TestSearchLimit:
     """Verify that the top_k parameter is accepted and forwarded to Memory.search()."""
 
     def test_limit_forwarded(self, client, mock_memory):
-        resp = client.post("/search", json={"query": "food", "user_id": "u1", "top_k": 5})
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "top_k": 5,
+        })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
         assert kwargs["top_k"] == 5
 
     def test_limit_one(self, client, mock_memory):
-        resp = client.post("/search", json={"query": "food", "user_id": "u1", "top_k": 1})
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "top_k": 1,
+        })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
         assert kwargs["top_k"] == 1
 
     def test_limit_omitted_uses_memory_default(self, client, mock_memory):
         """When top_k is not sent, it should not appear in the kwargs,
-        allowing Memory.search() to use its own default (100)."""
-        resp = client.post("/search", json={"query": "food", "user_id": "u1"})
+        allowing Memory.search() to use its own default."""
+        resp = client.post("/memories/search", json={"query": "food", "filters": {"user_id": "u1"}})
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
         assert "top_k" not in kwargs
 
 
 # ===========================================================================
-# SearchRequest: threshold parameter
+# SearchBody: threshold parameter
 # ===========================================================================
 
 class TestSearchThreshold:
     """Verify that the threshold parameter is accepted and forwarded."""
 
     def test_threshold_forwarded(self, client, mock_memory):
-        resp = client.post("/search", json={"query": "food", "user_id": "u1", "threshold": 0.8})
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "threshold": 0.8,
+        })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
         assert kwargs["threshold"] == 0.8
 
     def test_threshold_zero(self, client, mock_memory):
         """threshold=0.0 is a valid falsy value that must not be filtered out."""
-        resp = client.post("/search", json={"query": "food", "user_id": "u1", "threshold": 0.0})
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "threshold": 0.0,
+        })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
         assert kwargs["threshold"] == 0.0
 
     def test_threshold_omitted_uses_memory_default(self, client, mock_memory):
-        resp = client.post("/search", json={"query": "food", "user_id": "u1"})
+        resp = client.post("/memories/search", json={"query": "food", "filters": {"user_id": "u1"}})
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
         assert "threshold" not in kwargs
 
 
 # ===========================================================================
-# SearchRequest: top_k + threshold together
+# SearchBody: top_k + threshold together
 # ===========================================================================
 
 class TestSearchLimitAndThreshold:
 
     def test_both_forwarded(self, client, mock_memory):
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "top_k": 10, "threshold": 0.5
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "top_k": 10, "threshold": 0.5,
         })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
@@ -258,8 +265,8 @@ class TestFalsyValues:
         assert kwargs["infer"] is False
 
     def test_threshold_zero_not_filtered(self, client, mock_memory):
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "threshold": 0.0,
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "threshold": 0.0,
         })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
@@ -273,8 +280,8 @@ class TestFalsyValues:
 class TestUnknownFieldsIgnored:
 
     def test_unknown_search_field_ignored(self, client, mock_memory):
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "bogus_field": "xyz",
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "bogus_field": "xyz",
         })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
@@ -298,17 +305,17 @@ class TestUnknownFieldsIgnored:
 class TestExistingParamsUnchanged:
 
     def test_search_filters_still_forwarded(self, client, mock_memory):
-        resp = client.post("/search", json={
+        resp = client.post("/memories/search", json={
             "query": "food",
-            "user_id": "u1",
-            "agent_id": "a1",
-            "filters": {"category": "food"},
+            "filters": {"AND": [{"user_id": "u1"}, {"agent_id": "a1"}, {"category": "food"}]},
         })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
-        assert kwargs["user_id"] == "u1"
-        assert kwargs["agent_id"] == "a1"
-        assert kwargs["filters"] == {"category": "food"}
+        # The whole v2 filter dict is passed through verbatim — the SDK is
+        # responsible for translating it into the vector_store filter form.
+        assert kwargs["filters"] == {"AND": [
+            {"user_id": "u1"}, {"agent_id": "a1"}, {"category": "food"}
+        ]}
 
     def test_add_metadata_still_forwarded(self, client, mock_memory):
         resp = client.post("/memories", json={
@@ -333,14 +340,25 @@ class TestOpenAPISchema:
 
     def test_search_schema_includes_limit(self, client):
         schema = client.get("/openapi.json").json()
-        search_props = schema["components"]["schemas"]["SearchRequest"]["properties"]
+        search_props = schema["components"]["schemas"]["SearchBody"]["properties"]
         assert "top_k" in search_props
         assert search_props["top_k"]["description"] == "Maximum number of results to return."
 
     def test_search_schema_includes_threshold(self, client):
         schema = client.get("/openapi.json").json()
-        search_props = schema["components"]["schemas"]["SearchRequest"]["properties"]
+        search_props = schema["components"]["schemas"]["SearchBody"]["properties"]
         assert "threshold" in search_props
+
+    def test_search_schema_includes_rerank(self, client):
+        """rerank field, surfaced in v2 alignment."""
+        schema = client.get("/openapi.json").json()
+        search_props = schema["components"]["schemas"]["SearchBody"]["properties"]
+        assert "rerank" in search_props
+
+    def test_search_schema_includes_filters(self, client):
+        schema = client.get("/openapi.json").json()
+        search_props = schema["components"]["schemas"]["SearchBody"]["properties"]
+        assert "filters" in search_props
 
     def test_add_schema_includes_infer(self, client):
         schema = client.get("/openapi.json").json()
@@ -357,6 +375,12 @@ class TestOpenAPISchema:
         add_props = schema["components"]["schemas"]["MemoryCreate"]["properties"]
         assert "prompt" in add_props
 
+    def test_add_schema_includes_app_id(self, client):
+        """app_id field, added in v2 alignment."""
+        schema = client.get("/openapi.json").json()
+        add_props = schema["components"]["schemas"]["MemoryCreate"]["properties"]
+        assert "app_id" in add_props
+
 
 # ===========================================================================
 # Pydantic type validation: invalid types return 422
@@ -366,14 +390,14 @@ class TestTypeValidation:
     """Verify FastAPI/Pydantic rejects invalid types with 422."""
 
     def test_limit_string_rejected(self, client):
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "top_k": "not_a_number",
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "top_k": "not_a_number",
         })
         assert resp.status_code == 422
 
     def test_threshold_string_rejected(self, client):
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "threshold": "high",
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "threshold": "high",
         })
         assert resp.status_code == 422
 
@@ -398,8 +422,8 @@ class TestTypeValidation:
         assert resp.status_code == 422
 
     def test_limit_float_rejected(self, client):
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "top_k": 5.7,
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "top_k": 5.7,
         })
         assert resp.status_code == 422
 
@@ -421,8 +445,8 @@ class TestExplicitNull:
     as omitted — the Memory class default should be used."""
 
     def test_limit_null_uses_memory_default(self, client, mock_memory):
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "top_k": None,
+        resp = client.post("/memories/search", json={
+            "query": "food", "filters": {"user_id": "u1"}, "top_k": None,
         })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
@@ -459,15 +483,15 @@ class TestCallSignatureMatch:
 
     def test_search_kwargs_are_valid(self, client, mock_memory):
         """All kwargs forwarded to Memory.search() must be in its signature."""
-        resp = client.post("/search", json={
-            "query": "food", "user_id": "u1", "agent_id": "a1",
-            "run_id": "r1", "filters": {"k": "v"},
-            "top_k": 10, "threshold": 0.5,
+        resp = client.post("/memories/search", json={
+            "query": "food",
+            "filters": {"AND": [{"user_id": "u1"}, {"agent_id": "a1"}, {"run_id": "r1"}]},
+            "top_k": 10, "threshold": 0.5, "rerank": True,
         })
         assert resp.status_code == 200
-        # The handler passes query= as a keyword arg, so it appears in kwargs too
         _, kwargs = mock_memory.search.call_args
-        valid_params = {"query", "user_id", "agent_id", "run_id", "top_k", "filters", "threshold", "rerank"}
+        # v2 form: entity ids live inside filters, not at the top level
+        valid_params = {"query", "filters", "top_k", "threshold", "rerank"}
         for key in kwargs:
             assert key in valid_params, f"Unexpected kwarg '{key}' forwarded to Memory.search()"
 
@@ -475,14 +499,14 @@ class TestCallSignatureMatch:
         """All kwargs forwarded to Memory.add() must be in its signature."""
         resp = client.post("/memories", json={
             "messages": [{"role": "user", "content": "hi"}],
-            "user_id": "u1", "agent_id": "a1", "run_id": "r1",
+            "user_id": "u1", "agent_id": "a1", "run_id": "r1", "app_id": "ios",
             "metadata": {"k": "v"},
             "infer": False, "memory_type": "core", "prompt": "custom",
         })
         assert resp.status_code == 200
         # The handler passes messages= as a keyword arg, so it appears in kwargs too
         _, kwargs = mock_memory.add.call_args
-        valid_params = {"messages", "user_id", "agent_id", "run_id", "metadata", "infer", "memory_type", "prompt"}
+        valid_params = {"messages", "user_id", "agent_id", "run_id", "app_id", "metadata", "infer", "memory_type", "prompt"}
         for key in kwargs:
             assert key in valid_params, f"Unexpected kwarg '{key}' forwarded to Memory.add()"
 
@@ -501,7 +525,7 @@ class TestCallSignatureMatch:
 
     def test_query_passed_explicitly(self, client, mock_memory):
         """query is passed as an explicit keyword arg to Memory.search()."""
-        resp = client.post("/search", json={"query": "food", "user_id": "u1"})
+        resp = client.post("/memories/search", json={"query": "food", "filters": {"user_id": "u1"}})
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
         assert kwargs["query"] == "food"
@@ -563,28 +587,34 @@ class TestUpdateOpenAPISchema:
         assert "metadata" in update_props
 
 # ===========================================================================
-# GetMemories: Entity parameters to filters mapping (fix for #4955)
+# ListBody: v2 filter forwarding (replaces old GET /memories?user_id= path)
 # ===========================================================================
 
-class TestGetMemories:
-    """Verify that GET /memories correctly maps entity parameters to the filters dict."""
+class TestListMemories:
+    """Verify that POST /memories/list forwards the v2 filter dict to get_all()."""
 
-    def test_get_memories_entity_filters_routing(self, client, mock_memory):
-        """
-        Issue #4955: Test that the GET /memories route correctly handles 
-        top-level entity parameters by mapping them to the filters dictionary
-        instead of passing them as direct kwargs to get_all()
-        """
-        # Send a request with a valid top-level entity parameter
-        response = client.get("/memories?user_id=test_routing_user")
-        
-        # 1. Verify the endpoint doesn't crash with a 500 error
+    def test_list_forwards_filters(self, client, mock_memory):
+        """The user-supplied v2 filter dict reaches get_all() unchanged."""
+        response = client.post("/memories/list", json={
+            "filters": {"user_id": "test_routing_user"},
+        })
         assert response.status_code == 200
-        
-        # 2. Verify the response is structured correctly
-        data = response.json()
-        assert isinstance(data, list)
-        
-        # 3. Verify the core logic: the param was mapped to the filters dict!
+        # Response wraps a results array under {results: [...]}.
+        assert isinstance(response.json().get("results"), list)
         _, kwargs = mock_memory.get_all.call_args
         assert kwargs["filters"] == {"user_id": "test_routing_user"}
+
+    def test_list_forwards_advanced_filters(self, client, mock_memory):
+        """AND/OR/NOT and operator dicts are forwarded as-is — translation is the SDK's job."""
+        body = {
+            "filters": {
+                "AND": [
+                    {"user_id": "u1"},
+                    {"OR": [{"agent_id": "a1"}, {"agent_id": "a2"}]},
+                ]
+            }
+        }
+        response = client.post("/memories/list", json=body)
+        assert response.status_code == 200
+        _, kwargs = mock_memory.get_all.call_args
+        assert kwargs["filters"] == body["filters"]

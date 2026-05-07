@@ -79,7 +79,7 @@ class TestAuthDisabled:
         assert resp.json()["id"] == "mem-1"
 
     def test_get_all_memories_without_key(self):
-        resp = self.client.get("/memories", params={"user_id": "alice"})
+        resp = self.client.post("/memories/list", json={"filters": {"user_id": "alice"}})
         assert resp.status_code == 200
 
     def test_create_memory_without_key(self):
@@ -90,7 +90,7 @@ class TestAuthDisabled:
         assert resp.status_code == 200
 
     def test_search_without_key(self):
-        resp = self.client.post("/search", json={"query": "pizza", "user_id": "alice"})
+        resp = self.client.post("/memories/search", json={"query": "pizza", "filters": {"user_id": "alice"}})
         assert resp.status_code == 200
 
     def test_update_memory_without_key(self):
@@ -106,7 +106,7 @@ class TestAuthDisabled:
         assert resp.status_code == 200
 
     def test_delete_all_without_key(self):
-        resp = self.client.delete("/memories", params={"user_id": "alice"})
+        resp = self.client.post("/memories/delete", json={"filters": {"user_id": "alice"}})
         assert resp.status_code == 200
 
     def test_reset_without_key(self):
@@ -130,13 +130,13 @@ class TestAuthDisabled:
         [
             ("POST", "/configure"),
             ("POST", "/memories"),
-            ("GET", "/memories"),
+            ("POST", "/memories/list"),
             ("GET", "/memories/test-id"),
-            ("POST", "/search"),
+            ("POST", "/memories/search"),
             ("PUT", "/memories/test-id"),
             ("GET", "/memories/test-id/history"),
             ("DELETE", "/memories/test-id"),
-            ("DELETE", "/memories"),
+            ("POST", "/memories/delete"),
             ("POST", "/reset"),
         ],
     )
@@ -209,13 +209,13 @@ class TestAuthEnabled:
         [
             ("POST", "/configure"),
             ("POST", "/memories"),
-            ("GET", "/memories"),
+            ("POST", "/memories/list"),
             ("GET", "/memories/test-id"),
-            ("POST", "/search"),
+            ("POST", "/memories/search"),
             ("PUT", "/memories/test-id"),
             ("GET", "/memories/test-id/history"),
             ("DELETE", "/memories/test-id"),
-            ("DELETE", "/memories"),
+            ("POST", "/memories/delete"),
             ("POST", "/reset"),
         ],
     )
@@ -228,13 +228,13 @@ class TestAuthEnabled:
         [
             ("POST", "/configure"),
             ("POST", "/memories"),
-            ("GET", "/memories"),
+            ("POST", "/memories/list"),
             ("GET", "/memories/test-id"),
-            ("POST", "/search"),
+            ("POST", "/memories/search"),
             ("PUT", "/memories/test-id"),
             ("GET", "/memories/test-id/history"),
             ("DELETE", "/memories/test-id"),
-            ("DELETE", "/memories"),
+            ("POST", "/memories/delete"),
             ("POST", "/reset"),
         ],
     )
@@ -259,7 +259,7 @@ class TestAuthEnabled:
         assert resp.json()["id"] == "mem-1"
 
     def test_get_all_memories_with_key(self):
-        resp = self._authed("GET", "/memories", params={"user_id": "alice"})
+        resp = self._authed("POST", "/memories/list", json={"filters": {"user_id": "alice"}})
         assert resp.status_code == 200
 
     def test_create_memory_with_key(self):
@@ -272,7 +272,7 @@ class TestAuthEnabled:
         assert "results" in data
 
     def test_search_with_key(self):
-        resp = self._authed("POST", "/search", json={"query": "pizza", "user_id": "alice"})
+        resp = self._authed("POST", "/memories/search", json={"query": "pizza", "filters": {"user_id": "alice"}})
         assert resp.status_code == 200
 
     def test_update_memory_with_key(self):
@@ -288,7 +288,7 @@ class TestAuthEnabled:
         assert resp.status_code == 200
 
     def test_delete_all_with_key(self):
-        resp = self._authed("DELETE", "/memories", params={"user_id": "alice"})
+        resp = self._authed("POST", "/memories/delete", json={"filters": {"user_id": "alice"}})
         assert resp.status_code == 200
 
     def test_reset_with_key(self):
@@ -336,12 +336,12 @@ class TestAuthenticatedCRUDFlow:
         self.mock.get.assert_called_once_with("mem-1")
 
         # 3. Read all
-        resp = self._authed("GET", "/memories", params={"user_id": "alice"})
+        resp = self._authed("POST", "/memories/list", json={"filters": {"user_id": "alice"}})
         assert resp.status_code == 200
-        self.mock.get_all.assert_called_once_with(user_id="alice")
+        self.mock.get_all.assert_called_once_with(filters={"user_id": "alice"}, top_k=1000)
 
         # 4. Search
-        resp = self._authed("POST", "/search", json={"query": "pizza", "user_id": "alice"})
+        resp = self._authed("POST", "/memories/search", json={"query": "pizza", "filters": {"user_id": "alice"}})
         assert resp.status_code == 200
         self.mock.search.assert_called_once()
 
@@ -361,9 +361,9 @@ class TestAuthenticatedCRUDFlow:
         self.mock.delete.assert_called_once_with(memory_id="mem-1")
 
         # 8. Delete all
-        resp = self._authed("DELETE", "/memories", params={"user_id": "alice"})
+        resp = self._authed("POST", "/memories/delete", json={"filters": {"user_id": "alice"}})
         assert resp.status_code == 200
-        self.mock.delete_all.assert_called_once()
+        self.mock.delete_all.assert_called_once_with(filters={"user_id": "alice"})
 
     def test_crud_flow_blocked_without_auth(self):
         """Same flow should fail at every step without the key."""
@@ -372,12 +372,12 @@ class TestAuthenticatedCRUDFlow:
                 "messages": [{"role": "user", "content": "test"}], "user_id": "alice"
             }}),
             ("GET", "/memories/mem-1", {}),
-            ("GET", "/memories", {"params": {"user_id": "alice"}}),
-            ("POST", "/search", {"json": {"query": "pizza", "user_id": "alice"}}),
+            ("POST", "/memories/list", {"json": {"filters": {"user_id": "alice"}}}),
+            ("POST", "/memories/search", {"json": {"query": "pizza", "filters": {"user_id": "alice"}}}),
             ("PUT", "/memories/mem-1", {"json": {"data": "x"}}),
             ("GET", "/memories/mem-1/history", {}),
             ("DELETE", "/memories/mem-1", {}),
-            ("DELETE", "/memories", {"params": {"user_id": "alice"}}),
+            ("POST", "/memories/delete", {"json": {"filters": {"user_id": "alice"}}}),
             ("POST", "/reset", {}),
         ]
         for method, path, kwargs in endpoints:

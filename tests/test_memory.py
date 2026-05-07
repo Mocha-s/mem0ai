@@ -935,3 +935,221 @@ async def test_async_create_memory_stores_text_lemmatized(mock_sqlite, mock_llm_
     )
     assert payload[0]["text_lemmatized"] != "", "text_lemmatized must not be empty"
 
+
+# ---------------------------------------------------------------------------
+# v2 alignment: app_id support and get_all running through the v2 preprocessor
+# ---------------------------------------------------------------------------
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_build_filters_and_metadata_accepts_app_id(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """`_build_filters_and_metadata` must accept and propagate app_id."""
+    from mem0.memory.main import _build_filters_and_metadata
+
+    metadata, filters = _build_filters_and_metadata(
+        user_id="alice", app_id="ios_app"
+    )
+    assert metadata["app_id"] == "ios_app"
+    assert filters["app_id"] == "ios_app"
+    assert metadata["user_id"] == "alice"
+
+
+def test_build_filters_and_metadata_app_id_alone_is_valid():
+    """A single app_id should satisfy the at-least-one-id requirement."""
+    from mem0.memory.main import _build_filters_and_metadata
+
+    metadata, filters = _build_filters_and_metadata(app_id="ios_app")
+    assert filters == {"app_id": "ios_app"}
+    assert metadata == {"app_id": "ios_app"}
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_memory_add_passes_app_id_to_filters_and_metadata(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """Memory.add must accept app_id and stamp it into the stored payload."""
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1, 0.2, 0.3]
+    mock_embedder_factory.return_value = embedder
+
+    mock_vector_store = MagicMock()
+    mock_vector_store.search.return_value = []
+    mock_vector_factory.return_value = mock_vector_store
+
+    mock_llm = MagicMock()
+    mock_llm.generate_response.return_value = json.dumps({"facts": ["likes jazz"]})
+    mock_llm_factory.return_value = mock_llm
+
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+
+    memory.add(
+        [{"role": "user", "content": "I like jazz"}],
+        user_id="alice",
+        app_id="music_app",
+    )
+
+    # The first vector_store.search call inside _add_to_vector_store uses
+    # filters that include app_id.
+    search_filters = mock_vector_store.search.call_args.kwargs.get("filters", {})
+    assert search_filters.get("app_id") == "music_app"
+    assert search_filters.get("user_id") == "alice"
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_memory_get_all_app_id_only_filter_validates(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """get_all should accept filters with only app_id (no user/agent/run)."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mock_vector_store.list.return_value = [[]]
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+
+    # Should not raise
+    result = memory.get_all(filters={"app_id": "ios_app"})
+    assert result == {"results": []}
+    assert mock_vector_store.list.call_args.kwargs["filters"]["app_id"] == "ios_app"
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_memory_get_all_runs_v2_preprocessing(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """get_all must run v2 preprocessing — AND/OR/NOT should reach the vector store
+    in the same shape that search() produces, not the raw user-supplied form."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mock_vector_store.list.return_value = [[]]
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+
+    memory.get_all(filters={
+        "user_id": "alice",
+        "OR": [{"agent_id": "bot1"}, {"agent_id": "bot2"}],
+    })
+
+    list_filters = mock_vector_store.list.call_args.kwargs["filters"]
+    # OR must have been translated to $or by _process_metadata_filters
+    assert "$or" in list_filters
+    # The original OR key must have been popped
+    assert "OR" not in list_filters
+    assert list_filters.get("user_id") == "alice"
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_memory_search_accepts_app_id_filter(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """search should accept app_id in filters."""
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1, 0.2, 0.3]
+    mock_embedder_factory.return_value = embedder
+    mock_vector_store = MagicMock()
+    mock_vector_store.search.return_value = []
+    mock_vector_store.keyword_search.return_value = []
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+
+    memory.search("query", filters={"app_id": "ios"})
+    search_filters = mock_vector_store.search.call_args.kwargs["filters"]
+    assert search_filters.get("app_id") == "ios"
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_memory_delete_all_accepts_filters_dict(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """delete_all should accept filters dict (v2 form) and pass it through."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mock_vector_store.list.return_value = [[]]
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+
+    memory.delete_all(filters={"AND": [{"user_id": "alice"}, {"app_id": "ios"}]})
+
+    list_filters = mock_vector_store.list.call_args.kwargs["filters"]
+    # AND was processed and merged at top level; user_id and app_id present
+    assert list_filters.get("user_id") == "alice"
+    assert list_filters.get("app_id") == "ios"
+    assert "AND" not in list_filters
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_memory_delete_all_kwargs_app_id(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """delete_all kwarg path should accept app_id alongside user_id/agent_id/run_id."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mock_vector_store.list.return_value = [[]]
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+
+    memory.delete_all(user_id="alice", app_id="ios")
+
+    list_filters = mock_vector_store.list.call_args.kwargs["filters"]
+    assert list_filters == {"user_id": "alice", "app_id": "ios"}
+
+
+def test_process_telemetry_filters_handles_operator_dicts():
+    """Telemetry hashing must skip operator-dict entity values without crashing."""
+    from mem0.memory.utils import process_telemetry_filters
+
+    keys, encoded = process_telemetry_filters(
+        {"user_id": {"in": ["a", "b"]}, "app_id": "ios"}
+    )
+    # app_id (a plain string) is hashed; user_id (dict) is skipped
+    assert "app_id" in encoded
+    assert "user_id" not in encoded
+    # All keys are still listed
+    assert set(keys) == {"user_id", "app_id"}
+
+

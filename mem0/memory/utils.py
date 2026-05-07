@@ -199,18 +199,20 @@ def parse_vision_messages(messages, llm=None, vision_details="auto"):
 
 def process_telemetry_filters(filters):
     """
-    Process the telemetry filters
+    Process the telemetry filters.
+
+    Hashes scalar entity-id values for telemetry. Non-string values (operator
+    dicts like ``{"in": [...]}``, lists, or wildcards interpreted later) are
+    skipped — telemetry only records concrete identifiers.
     """
     if filters is None:
         return {}
 
     encoded_ids = {}
-    if "user_id" in filters:
-        encoded_ids["user_id"] = hashlib.md5(filters["user_id"].encode()).hexdigest()
-    if "agent_id" in filters:
-        encoded_ids["agent_id"] = hashlib.md5(filters["agent_id"].encode()).hexdigest()
-    if "run_id" in filters:
-        encoded_ids["run_id"] = hashlib.md5(filters["run_id"].encode()).hexdigest()
+    for key in ("user_id", "agent_id", "run_id", "app_id"):
+        value = filters.get(key)
+        if isinstance(value, str):
+            encoded_ids[key] = hashlib.md5(value.encode()).hexdigest()
 
     return list(filters.keys()), encoded_ids
 

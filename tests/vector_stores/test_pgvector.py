@@ -2233,3 +2233,312 @@ class TestPGVector(unittest.TestCase):
     def tearDown(self):
         """Clean up after each test."""
         pass
+
+
+class TestPGVectorV2Filters(unittest.TestCase):
+    """Unit tests for the v2 filter SQL translator (`_build_filter_sql` and helpers).
+
+    These tests construct a PGVector instance with the connection pool mocked
+    out, then call the pure-function translator methods directly. The Composable
+    SQL fragments are rendered with `as_string(None)` for plain-text assertions.
+    """
+
+    def setUp(self):
+        with patch("mem0.vector_stores.pgvector.PSYCOPG_VERSION", 3), \
+             patch("mem0.vector_stores.pgvector.ConnectionPool"), \
+             patch.object(PGVector, "list_cols", return_value=["memories"]):
+            self.store = PGVector(
+                dbname="db", collection_name="memories", embedding_model_dims=3,
+                user="u", password="p", host="h", port=5432,
+                diskann=False, hnsw=False,
+            )
+
+    def _render(self, filters):
+        """Compile filters and return (sql_text, params) or (None, None) when empty."""
+        compiled = self.store._build_filter_sql(filters)
+        if compiled is None:
+            return None, None
+        body, params = compiled
+        return body.as_string(None), params
+
+    # --- empty / no-op ---
+
+    def test_empty_filters_returns_none(self):
+        self.assertIsNone(self.store._build_filter_sql(None))
+        self.assertIsNone(self.store._build_filter_sql({}))
+
+    # --- single-field operators ---
+
+    def test_simple_equality(self):
+        sql_str, params = self._render({"user_id": "alice"})
+        self.assertEqual(sql_str, "payload->>%s = %s")
+        self.assertEqual(params, ["user_id", "alice"])
+
+    def test_wildcard_non_null(self):
+        sql_str, params = self._render({"user_id": "*"})
+        self.assertEqual(sql_str, "payload->>%s IS NOT NULL")
+        self.assertEqual(params, ["user_id"])
+
+    def test_explicit_eq_operator(self):
+        sql_str, params = self._render({"user_id": {"eq": "alice"}})
+        self.assertEqual(sql_str, "payload->>%s = %s")
+        self.assertEqual(params, ["user_id", "alice"])
+
+    def test_ne_operator_is_distinct_from(self):
+        sql_str, params = self._render({"user_id": {"ne": "alice"}})
+        self.assertEqual(sql_str, "(payload->>%s IS DISTINCT FROM %s)")
+        self.assertEqual(params, ["user_id", "alice"])
+
+    def test_in_operator(self):
+        sql_str, params = self._render({"user_id": {"in": ["a", "b"]}})
+        self.assertEqual(sql_str, "payload->>%s = ANY(%s)")
+        self.assertEqual(params, ["user_id", ["a", "b"]])
+
+    def test_in_empty_list_yields_false(self):
+        sql_str, params = self._render({"user_id": {"in": []}})
+        self.assertEqual(sql_str, "FALSE")
+        self.assertEqual(params, [])
+
+    def test_nin_operator(self):
+        sql_str, params = self._render({"user_id": {"nin": ["a"]}})
+        self.assertEqual(
+            sql_str, "(payload->>%s IS NULL OR payload->>%s <> ALL(%s))"
+        )
+        self.assertEqual(params, ["user_id", "user_id", ["a"]])
+
+    def test_nin_empty_list_yields_true(self):
+        sql_str, params = self._render({"user_id": {"nin": []}})
+        self.assertEqual(sql_str, "TRUE")
+
+    def test_raw_list_shorthand_treated_as_in(self):
+        sql_str, params = self._render({"user_id": ["a", "b"]})
+        self.assertEqual(sql_str, "payload->>%s = ANY(%s)")
+        self.assertEqual(params, ["user_id", ["a", "b"]])
+
+    def test_contains_operator(self):
+        sql_str, params = self._render({"text": {"contains": "foo"}})
+        self.assertEqual(sql_str, "payload->>%s LIKE %s")
+        self.assertEqual(params, ["text", "%foo%"])
+
+    def test_icontains_operator(self):
+        sql_str, params = self._render({"text": {"icontains": "Foo"}})
+        self.assertEqual(sql_str, "payload->>%s ILIKE %s")
+        self.assertEqual(params, ["text", "%Foo%"])
+
+    # --- range / comparison operators ---
+
+    def test_range_iso_datetime_uses_timestamptz_cast(self):
+        sql_str, params = self._render({"created_at": {"gte": "2024-01-01"}})
+        self.assertIn("::timestamptz", sql_str)
+        self.assertIn(">=", sql_str)
+        self.assertEqual(params, ["created_at", "2024-01-01"])
+
+    def test_range_numeric_uses_numeric_cast(self):
+        sql_str, params = self._render({"score": {"gt": 10}})
+        self.assertIn("::numeric", sql_str)
+        self.assertIn(">", sql_str)
+        self.assertEqual(params, ["score", "10"])
+
+    def test_range_text_fallback(self):
+        sql_str, params = self._render({"label": {"gt": "z"}})
+        self.assertNotIn("::numeric", sql_str)
+        self.assertNotIn("::timestamptz", sql_str)
+        self.assertIn(">", sql_str)
+        self.assertEqual(params, ["label", "z"])
+
+    def test_range_multiple_ops_same_key_anded(self):
+        sql_str, params = self._render(
+            {"created_at": {"gte": "2024-01-01", "lt": "2024-02-01"}}
+        )
+        self.assertIn(" AND ", sql_str)
+        self.assertIn(">=", sql_str)
+        self.assertIn("<", sql_str)
+        self.assertEqual(
+            params, ["created_at", "2024-01-01", "created_at", "2024-02-01"]
+        )
+
+    # --- special fields ---
+
+    def test_memory_ids_in_form_routes_to_id_column(self):
+        sql_str, params = self._render({"memory_ids": {"in": ["id1", "id2"]}})
+        self.assertEqual(sql_str, "id::text = ANY(%s)")
+        self.assertEqual(params, [["id1", "id2"]])
+
+    def test_memory_ids_raw_list_form(self):
+        sql_str, params = self._render({"memory_ids": ["id1", "id2"]})
+        self.assertEqual(sql_str, "id::text = ANY(%s)")
+        self.assertEqual(params, [["id1", "id2"]])
+
+    def test_metadata_sub_keys_addressed_at_payload_top_level(self):
+        # OSS stores metadata flat in payload, so {metadata: {source: "email"}}
+        # must compile to payload->>'source' = 'email'.
+        sql_str, params = self._render({"metadata": {"source": "email"}})
+        self.assertEqual(sql_str, "payload->>%s = %s")
+        self.assertEqual(params, ["source", "email"])
+
+    def test_metadata_with_operator(self):
+        sql_str, params = self._render(
+            {"metadata": {"score": {"gte": 10}}}
+        )
+        self.assertIn("::numeric", sql_str)
+        self.assertEqual(params, ["score", "10"])
+
+    # --- logical operators ---
+
+    def test_logical_and_groups_with_parens(self):
+        sql_str, params = self._render(
+            {"AND": [{"user_id": "alice"}, {"agent_id": "bot"}]}
+        )
+        self.assertTrue(sql_str.startswith("(") and sql_str.endswith(")"))
+        self.assertIn(" AND ", sql_str)
+        self.assertEqual(params, ["user_id", "alice", "agent_id", "bot"])
+
+    def test_logical_or(self):
+        sql_str, params = self._render(
+            {"OR": [{"user_id": "alice"}, {"user_id": "bob"}]}
+        )
+        self.assertIn(" OR ", sql_str)
+        self.assertEqual(params, ["user_id", "alice", "user_id", "bob"])
+
+    def test_logical_not(self):
+        sql_str, params = self._render({"NOT": [{"user_id": "alice"}]})
+        self.assertIn("NOT (", sql_str)
+        self.assertEqual(params, ["user_id", "alice"])
+
+    def test_dollar_alias_for_or(self):
+        # Memory._process_metadata_filters emits $or — the translator must
+        # accept it as an alias for OR.
+        sql_str, params = self._render(
+            {"$or": [{"user_id": "a"}, {"user_id": "b"}]}
+        )
+        self.assertIn(" OR ", sql_str)
+
+    def test_dollar_and_dedup_with_capital_and(self):
+        # If both AND and $and are present (which can happen post-preprocessing),
+        # we process only the first to avoid double-emitting.
+        sql_str, params = self._render(
+            {"AND": [{"user_id": "a"}], "$and": [{"agent_id": "b"}]}
+        )
+        # Only the AND case (user_id=a) survives; $and is skipped.
+        self.assertIn("user_id", params)
+        self.assertNotIn("agent_id", params)
+
+    def test_nested_and_with_or(self):
+        sql_str, params = self._render({
+            "AND": [
+                {"user_id": "alice"},
+                {"OR": [{"agent_id": "bot1"}, {"agent_id": "bot2"}]},
+            ]
+        })
+        self.assertIn(" AND ", sql_str)
+        self.assertIn(" OR ", sql_str)
+        self.assertEqual(
+            params,
+            ["user_id", "alice", "agent_id", "bot1", "agent_id", "bot2"],
+        )
+
+    def test_combined_entity_wildcard_and_range(self):
+        sql_str, params = self._render({
+            "AND": [
+                {"user_id": "*"},
+                {"created_at": {"gte": "2024-01-01"}},
+            ]
+        })
+        self.assertIn("IS NOT NULL", sql_str)
+        self.assertIn("::timestamptz", sql_str)
+        self.assertEqual(
+            params, ["user_id", "created_at", "2024-01-01"]
+        )
+
+    # --- error cases ---
+
+    def test_unknown_operator_raises(self):
+        with self.assertRaises(ValueError):
+            self.store._build_filter_sql({"user_id": {"like": "x"}})
+
+    def test_logical_value_must_be_list(self):
+        with self.assertRaises(ValueError):
+            self.store._build_filter_sql({"AND": {"user_id": "a"}})
+
+    def test_logical_list_items_must_be_dicts(self):
+        with self.assertRaises(ValueError):
+            self.store._build_filter_sql({"AND": ["not a dict"]})
+
+    def test_in_requires_list(self):
+        with self.assertRaises(ValueError):
+            self.store._build_filter_sql({"user_id": {"in": "a"}})
+
+
+class TestPGVectorCallSitesUseTranslator(unittest.TestCase):
+    """Smoke tests proving search/keyword_search/list now use the v2 translator."""
+
+    def setUp(self):
+        self.mock_cursor = MagicMock()
+        self.mock_conn = MagicMock()
+        self.mock_conn.cursor.return_value.__enter__.return_value = self.mock_cursor
+        self.mock_pool = MagicMock()
+        self.mock_pool.connection.return_value.__enter__.return_value = self.mock_conn
+
+        with patch("mem0.vector_stores.pgvector.PSYCOPG_VERSION", 3), \
+             patch("mem0.vector_stores.pgvector.ConnectionPool", return_value=self.mock_pool), \
+             patch.object(PGVector, "list_cols", return_value=["memories"]):
+            self.store = PGVector(
+                dbname="db", collection_name="memories", embedding_model_dims=3,
+                user="u", password="p", host="h", port=5432,
+                diskann=False, hnsw=False,
+            )
+
+    def _executed_sql_and_params(self):
+        # Cursor.execute is called once per call site we exercise.
+        call = self.mock_cursor.execute.call_args
+        sql_obj, params = call.args
+        return sql_obj.as_string(None), params
+
+    def test_search_emits_v2_where(self):
+        self.mock_cursor.fetchall.return_value = []
+        self.store.search(
+            query="q",
+            vectors=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters={"OR": [{"user_id": "a"}, {"user_id": "b"}]},
+        )
+        sql_text, params = self._executed_sql_and_params()
+        self.assertIn("WHERE", sql_text)
+        self.assertIn(" OR ", sql_text)
+        # vectors first, then filter params (a, b), then top_k
+        self.assertEqual(list(params), [[0.1, 0.2, 0.3], "user_id", "a", "user_id", "b", 5])
+
+    def test_list_emits_v2_where(self):
+        self.mock_cursor.fetchall.return_value = []
+        self.store.list(
+            filters={"AND": [{"user_id": "alice"}, {"app_id": "ios"}]},
+            top_k=10,
+        )
+        sql_text, params = self._executed_sql_and_params()
+        self.assertIn("WHERE", sql_text)
+        self.assertIn(" AND ", sql_text)
+        self.assertEqual(list(params), ["user_id", "alice", "app_id", "ios", 10])
+
+    def test_list_no_filters_no_where(self):
+        self.mock_cursor.fetchall.return_value = []
+        self.store.list(filters=None, top_k=10)
+        sql_text, params = self._executed_sql_and_params()
+        self.assertNotIn("WHERE", sql_text)
+        self.assertEqual(list(params), [10])
+
+    def test_keyword_search_appends_filter_with_and(self):
+        self.mock_cursor.fetchall.return_value = []
+        self.store.keyword_search(
+            query="hello",
+            top_k=5,
+            filters={"user_id": "alice"},
+        )
+        sql_text, params = self._executed_sql_and_params()
+        # WHERE for FTS plus AND for filter
+        self.assertIn("WHERE", sql_text)
+        self.assertIn("AND payload->>%s = %s", sql_text)
+        # query, query, filter key, filter value, top_k
+        self.assertEqual(list(params), ["hello", "hello", "user_id", "alice", 5])
+
+    def tearDown(self):
+        pass

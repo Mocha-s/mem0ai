@@ -3,6 +3,8 @@ export interface Memory {
   memory: string;
   user_id?: string;
   agent_id?: string;
+  run_id?: string;
+  app_id?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -33,7 +35,7 @@ export interface ApiRequestLog {
   auth_type: string;
 }
 
-export type EntityType = "user" | "agent" | "run";
+export type EntityType = "user" | "agent" | "run" | "app";
 
 export interface Entity {
   id: string;

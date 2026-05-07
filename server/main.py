@@ -175,6 +175,7 @@ class MemoryCreate(BaseModel):
     user_id: Optional[str] = None
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
+    app_id: Optional[str] = Field(None, description="Application identifier for tenant/app scoping.")
     metadata: Optional[Dict[str, Any]] = None
     infer: Optional[bool] = Field(None, description="Whether to extract facts from messages. Defaults to True.")
     memory_type: Optional[str] = Field(None, description="Type of memory to store (e.g. 'core').")
@@ -186,14 +187,32 @@ class MemoryUpdate(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(None, description="Metadata to update.")
 
 
-class SearchRequest(BaseModel):
+class ListBody(BaseModel):
+    """Body for `POST /memories/list` — v2 filter dict + pagination."""
+    filters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="v2 filter dict (AND/OR/NOT, eq/ne/in/nin/gt/gte/lt/lte/contains/icontains, '*'). "
+        "Empty means list all (admin operation, may be capped by top_k).",
+    )
+    top_k: Optional[int] = Field(None, description="Maximum number of results to return.")
+
+
+class SearchBody(BaseModel):
+    """Body for `POST /memories/search` — v2 filter dict + reranking."""
     query: str = Field(..., description="Search query.")
-    user_id: Optional[str] = None
-    run_id: Optional[str] = None
-    agent_id: Optional[str] = None
-    filters: Optional[Dict[str, Any]] = None
+    filters: Optional[Dict[str, Any]] = Field(None, description="v2 filter dict.")
     top_k: Optional[int] = Field(None, description="Maximum number of results to return.")
     threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
+    rerank: Optional[bool] = Field(
+        None, description="Apply reranker if configured. Defaults to False."
+    )
+
+
+class DeleteBody(BaseModel):
+    """Body for `POST /memories/delete` — bulk delete by v2 filter dict."""
+    filters: Dict[str, Any] = Field(
+        ..., description="v2 filter dict scoping the memories to delete. Required."
+    )
 
 
 class GenerateInstructionsRequest(BaseModel):
@@ -348,8 +367,11 @@ def generate_instructions(req: GenerateInstructionsRequest, _auth=Depends(verify
 @app.post("/memories", summary="Create memories")
 def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
     """Store new memories."""
-    if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
-        raise HTTPException(status_code=400, detail="At least one identifier (user_id, agent_id, run_id) is required.")
+    if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id, memory_create.app_id]):
+        raise HTTPException(
+            status_code=400,
+            detail="At least one identifier (user_id, agent_id, run_id, app_id) is required.",
+        )
 
     params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
     try:
@@ -360,7 +382,7 @@ def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
 
 
 ALL_MEMORIES_LIMIT = 1000
-_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at"}
+_RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "app_id", "hash", "created_at", "updated_at"}
 
 
 def _serialize_memory(row: Any) -> Dict[str, Any]:
@@ -371,6 +393,7 @@ def _serialize_memory(row: Any) -> Dict[str, Any]:
         "user_id": payload.get("user_id"),
         "agent_id": payload.get("agent_id"),
         "run_id": payload.get("run_id"),
+        "app_id": payload.get("app_id"),
         "hash": payload.get("hash"),
         "metadata": {k: v for k, v in payload.items() if k not in _RESERVED_PAYLOAD_KEYS},
         "created_at": payload.get("created_at"),
@@ -384,21 +407,23 @@ def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
     return {"results": [_serialize_memory(row) for row in rows]}
 
 
-@app.get("/memories", summary="Get memories")
-def get_all_memories(
-    user_id: Optional[str] = None,
-    run_id: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    _auth=Depends(verify_auth),
-):
-    """Retrieve stored memories. Lists all memories when no identifier is provided."""
+@app.post("/memories/list", summary="List memories with v2 filters")
+def list_memories(body: ListBody, _auth=Depends(verify_auth)):
+    """
+    List memories matching a v2 filter dict.
+
+    Empty filters list everything (capped by `top_k`, defaulting to 1000) — useful
+    for admin workflows. For scoped queries, pass an entity-id filter or wildcards
+    (e.g. ``{"user_id": "*"}`` to list across all users).
+    """
     try:
-        if not any([user_id, run_id, agent_id]):
-            return _list_all_memories()
-        filters = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
-        }
-        return get_memory_instance().get_all(filters=filters)
+        filters = body.filters or {}
+        limit = body.top_k or ALL_MEMORIES_LIMIT
+        if not filters:
+            return _list_all_memories(limit)
+        return get_memory_instance().get_all(filters=filters, top_k=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         raise upstream_error()
 
@@ -412,12 +437,27 @@ def get_memory(memory_id: str, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
-@app.post("/search", summary="Search memories")
-def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
-    """Search for memories based on a query."""
+@app.post("/memories/search", summary="Search memories")
+def search_memories(body: SearchBody, _auth=Depends(verify_auth)):
+    """
+    Semantic + keyword search with v2 filter dict.
+
+    Pass ``rerank=true`` to apply the configured reranker — this is a no-op when
+    no reranker is configured in the active memory config.
+    """
     try:
-        params = {k: v for k, v in search_req.model_dump().items() if v is not None and k != "query"}
-        return get_memory_instance().search(query=search_req.query, **params)
+        kwargs: Dict[str, Any] = {}
+        if body.filters is not None:
+            kwargs["filters"] = body.filters
+        if body.top_k is not None:
+            kwargs["top_k"] = body.top_k
+        if body.threshold is not None:
+            kwargs["threshold"] = body.threshold
+        if body.rerank is not None:
+            kwargs["rerank"] = body.rerank
+        return get_memory_instance().search(query=body.query, **kwargs)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         raise upstream_error()
 
@@ -452,22 +492,23 @@ def delete_memory(memory_id: str, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
-@app.delete("/memories", summary="Delete all memories", response_model=MessageResponse)
-def delete_all_memories(
-    user_id: Optional[str] = None,
-    run_id: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    _auth=Depends(verify_auth),
-):
-    """Delete all memories for a given identifier."""
-    if not any([user_id, run_id, agent_id]):
-        raise HTTPException(status_code=400, detail="At least one identifier is required.")
+@app.post("/memories/delete", summary="Delete memories matching v2 filters", response_model=MessageResponse)
+def delete_memories_by_filter(body: DeleteBody, _auth=Depends(verify_auth)):
+    """Delete all memories matching a v2 filter dict.
+
+    The filter must scope the operation — an empty filter is rejected to
+    prevent accidental project-wide wipes (use ``POST /reset`` for that).
+    """
+    if not body.filters:
+        raise HTTPException(
+            status_code=400,
+            detail="filters are required. Use POST /reset to wipe everything.",
+        )
     try:
-        params = {
-            k: v for k, v in {"user_id": user_id, "run_id": run_id, "agent_id": agent_id}.items() if v is not None
-        }
-        get_memory_instance().delete_all(**params)
+        get_memory_instance().delete_all(filters=body.filters)
         return MessageResponse(message="All relevant memories deleted")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         raise upstream_error()
 
