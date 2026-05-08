@@ -349,7 +349,7 @@ def test_create_then_search_and_get_all_return_same_timestamps(mocker):
     get_all_results = memory._get_all_from_vector_store(filters={"user_id": "alice"}, limit=100)
 
     search_item = search_results[0]
-    get_all_item = get_all_results[0]
+    get_all_item = get_all_results["results"][0]
 
     # The core assertion from issue #3720: created_at must be the same
     assert search_item["created_at"] == get_all_item["created_at"], (
@@ -415,8 +415,8 @@ def test_search_and_get_all_consistent_after_update(mocker):
     search_results = memory._search_vector_store("pizza", filters={"user_id": "alice"}, limit=10)
     get_all_results = memory._get_all_from_vector_store(filters={"user_id": "alice"}, limit=100)
 
-    assert search_results[0]["created_at"] == get_all_results[0]["created_at"]
-    assert search_results[0]["updated_at"] == get_all_results[0]["updated_at"]
+    assert search_results[0]["created_at"] == get_all_results["results"][0]["created_at"]
+    assert search_results[0]["updated_at"] == get_all_results["results"][0]["updated_at"]
     # created_at should be the original, not the updated time
     assert search_results[0]["created_at"] == "2023-05-06T09:19:20+00:00"
     assert search_results[0]["updated_at"] == "2026-03-23T10:00:00+00:00"
@@ -790,5 +790,106 @@ class TestAsyncFeedback:
         payload = memory.vector_store.update.call_args.kwargs["payload"]
         assert "feedback" not in payload
         assert "feedback_reason" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Plan Task 1: Memory.get_all + AsyncMemory.get_all accept offset / count_total
+# ---------------------------------------------------------------------------
+
+
+class TestGetAllPagination:
+    """V3 alignment: Memory.get_all accepts offset and count_total kwargs.
+
+    The kwargs are forwarded to the underlying vector_store.list when the
+    backend's signature accepts them (introspected via inspect.signature).
+    The MagicMock-backed test fixture has a (*args, **kwargs) signature, so
+    the kwargs are always forwarded in tests.
+    """
+
+    @pytest.fixture
+    def memory_pair(self, mocker):
+        mock_llm, mock_vector_store = _setup_mocks(mocker)
+        memory = Memory()
+        memory.config = mocker.MagicMock()
+        memory.config.custom_instructions = None
+        memory.api_version = "v1.1"
+        return memory, mock_vector_store.return_value
+
+    def test_get_all_offset_forwarded_to_vector_store(self, memory_pair):
+        memory, vs = memory_pair
+        vs.list.return_value = {"results": [], "count": 0}
+        memory.get_all(filters={"user_id": "alice"}, top_k=10, offset=20)
+        kwargs = vs.list.call_args.kwargs
+        assert kwargs.get("offset") == 20
+
+    def test_get_all_count_total_kwarg_forwarded(self, memory_pair):
+        memory, vs = memory_pair
+        vs.list.return_value = {"results": [], "count": 0}
+        memory.get_all(filters={"user_id": "alice"}, top_k=10, count_total=True)
+        kwargs = vs.list.call_args.kwargs
+        assert kwargs.get("count_total") is True
+
+    def test_get_all_count_total_returns_count_key(self, mocker, memory_pair):
+        memory, vs = memory_pair
+        mock_mem = mocker.MagicMock()
+        mock_mem.id = "m1"
+        mock_mem.payload = {"data": "fact"}
+        vs.list.return_value = {"results": [mock_mem], "count": 42}
+        result = memory.get_all(filters={"user_id": "alice"}, top_k=10, count_total=True)
+        assert result["count"] == 42
+        assert len(result["results"]) == 1
+        assert result["results"][0]["id"] == "m1"
+
+    def test_get_all_no_count_total_no_count_key(self, memory_pair):
+        memory, vs = memory_pair
+        vs.list.return_value = [[]]  # legacy nested-list shape
+        result = memory.get_all(filters={"user_id": "alice"}, top_k=10)
+        assert "count" not in result
+
+    def test_get_all_legacy_dict_with_inner_nested_list_unwraps(self, mocker, memory_pair):
+        """Defensive: pgvector returns {"results": [[OutputData...]]} — the
+        helper must unwrap the inner list before serialising."""
+        memory, vs = memory_pair
+        mock_mem = mocker.MagicMock()
+        mock_mem.id = "m2"
+        mock_mem.payload = {"data": "fact2"}
+        vs.list.return_value = {"results": [[mock_mem]], "count": 1}
+        result = memory.get_all(filters={"user_id": "alice"}, top_k=10, count_total=True)
+        assert len(result["results"]) == 1
+        assert result["results"][0]["id"] == "m2"
+        assert result["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_async_get_all_offset_forwarded(self, mocker):
+        mock_llm, mock_vector_store = _setup_mocks(mocker)
+        memory = AsyncMemory()
+        memory.config = mocker.MagicMock()
+        memory.config.custom_instructions = None
+        memory.api_version = "v1.1"
+        vs = mock_vector_store.return_value
+        vs.list.return_value = {"results": [], "count": 0}
+
+        await memory.get_all(filters={"user_id": "alice"}, top_k=10, offset=15, count_total=True)
+
+        kwargs = vs.list.call_args.kwargs
+        assert kwargs.get("offset") == 15
+        assert kwargs.get("count_total") is True
+
+    @pytest.mark.asyncio
+    async def test_async_get_all_count_total_returns_count_key(self, mocker):
+        mock_llm, mock_vector_store = _setup_mocks(mocker)
+        memory = AsyncMemory()
+        memory.config = mocker.MagicMock()
+        memory.config.custom_instructions = None
+        memory.api_version = "v1.1"
+
+        mock_mem = mocker.MagicMock()
+        mock_mem.id = "m3"
+        mock_mem.payload = {"data": "fact3"}
+        mock_vector_store.return_value.list.return_value = {"results": [mock_mem], "count": 9}
+
+        result = await memory.get_all(filters={"user_id": "alice"}, top_k=10, count_total=True)
+        assert result["count"] == 9
+        assert result["results"][0]["id"] == "m3"
 
 

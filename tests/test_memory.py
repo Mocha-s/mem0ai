@@ -175,10 +175,10 @@ def test_get_all_handles_nested_list_from_chroma(mock_sqlite, mock_llm_factory, 
     result = memory._get_all_from_vector_store({"user_id": "test"}, 100)
 
     # Should successfully unwrap and return 3 memories
-    assert len(result) == 3
-    assert result[0]["memory"] == "My dog name is Sheru"
-    assert result[1]["memory"] == "I like to code in Python"
-    assert result[2]["memory"] == "I live in California"
+    assert len(result["results"]) == 3
+    assert result["results"][0]["memory"] == "My dog name is Sheru"
+    assert result["results"][1]["memory"] == "I like to code in Python"
+    assert result["results"][2]["memory"] == "I live in California"
 
 
 @patch('mem0.utils.factory.EmbedderFactory.create')
@@ -210,9 +210,9 @@ def test_get_all_handles_tuple_from_qdrant(mock_sqlite, mock_llm_factory, mock_v
 
     result = memory._get_all_from_vector_store({"user_id": "test"}, 100)
 
-    assert len(result) == 2
-    assert result[0]["memory"] == "Memory 1"
-    assert result[1]["memory"] == "Memory 2"
+    assert len(result["results"]) == 2
+    assert result["results"][0]["memory"] == "Memory 1"
+    assert result["results"][1]["memory"] == "Memory 2"
 
 
 @patch('mem0.utils.factory.EmbedderFactory.create')
@@ -244,9 +244,9 @@ def test_get_all_handles_flat_list_from_postgres(mock_sqlite, mock_llm_factory, 
 
     result = memory._get_all_from_vector_store({"user_id": "test"}, 100)
 
-    assert len(result) == 2
-    assert result[0]["memory"] == "Memory 1"
-    assert result[1]["memory"] == "Memory 2"
+    assert len(result["results"]) == 2
+    assert result["results"][0]["memory"] == "Memory 1"
+    assert result["results"][1]["memory"] == "Memory 2"
 
 
 @patch('mem0.utils.factory.EmbedderFactory.create')

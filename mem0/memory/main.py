@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -1237,6 +1238,8 @@ class Memory(MemoryBase):
         *,
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
+        offset: int = 0,
+        count_total: bool = False,
         **kwargs,
     ):
         """
@@ -1247,9 +1250,15 @@ class Memory(MemoryBase):
                 Must contain at least one of: user_id, agent_id, run_id, app_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
+            offset (int, optional): Number of rows to skip before returning. Used by the
+                paginated V3 list endpoint. Defaults to 0.
+            count_total (bool, optional): When True, includes a ``count`` key in the
+                response with the total number of matching memories (ignoring pagination).
+                Backends that don't support count return ``count=None``. Defaults to False.
 
         Returns:
             dict: A dictionary containing a list of memories under the "results" key.
+                  When ``count_total=True``, additionally contains a ``count`` key.
                   Example for v1.1+: `{"results": [{"id": "...", "memory": "...", ...}]}`
 
         Raises:
@@ -1306,25 +1315,57 @@ class Memory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"}
         )
 
-        all_memories_result = self._get_all_from_vector_store(effective_filters, limit)
+        all_memories_result = self._get_all_from_vector_store(
+            effective_filters, limit, offset=offset, count_total=count_total
+        )
 
-        return {"results": all_memories_result}
+        out = {"results": all_memories_result["results"]}
+        if count_total:
+            out["count"] = all_memories_result.get("count")
+        return out
 
-    def _get_all_from_vector_store(self, filters, limit):
-        memories_result = self.vector_store.list(filters=filters, top_k=limit)
+    def _get_all_from_vector_store(self, filters, limit, *, offset=0, count_total=False):
+        # Some vector stores have explicit ``offset`` / ``count_total`` params (pgvector after
+        # Plan Task 2); others have only ``filters`` / ``top_k``. Introspect to avoid passing
+        # unsupported kwargs, and only forward when the caller asked for non-default behavior
+        # — preserves existing call signatures for backends/mocks that don't accept the kwargs.
+        list_kwargs = {"filters": filters, "top_k": limit}
+        if offset or count_total:
+            try:
+                list_sig = inspect.signature(self.vector_store.list)
+                params = list_sig.parameters
+                has_var_keyword = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+                if offset and (has_var_keyword or "offset" in params):
+                    list_kwargs["offset"] = offset
+                if count_total and (has_var_keyword or "count_total" in params):
+                    list_kwargs["count_total"] = count_total
+            except (ValueError, TypeError):
+                pass
+        memories_result = self.vector_store.list(**list_kwargs)
 
-        # Handle different vector store return formats by inspecting first element
-        if isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
+        # Vector stores return one of:
+        #   - {"results": [...], "count": N}  (new dict shape, when count_total=True)
+        #   - {"results": [...]}              (new dict shape)
+        #   - [[OutputData, ...]]             (legacy nested-list)
+        #   - [OutputData, ...]               (legacy flat list)
+        count: Optional[int] = None
+        if isinstance(memories_result, dict) and "results" in memories_result:
+            actual_memories = memories_result["results"]
+            # pgvector wraps the row list in one extra list to preserve legacy callers.
+            if isinstance(actual_memories, list) and actual_memories and isinstance(actual_memories[0], list):
+                actual_memories = actual_memories[0]
+            if count_total:
+                count = memories_result.get("count")
+        elif isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
             first_element = memories_result[0]
-
-            # If first element is a container, unwrap one level
             if isinstance(first_element, (list, tuple)):
                 actual_memories = first_element
             else:
-                # First element is a memory object, structure is already flat
                 actual_memories = memories_result
         else:
-            actual_memories = memories_result
+            actual_memories = memories_result or []
 
         promoted_payload_keys = [
             "user_id",
@@ -1357,7 +1398,7 @@ class Memory(MemoryBase):
 
             formatted_memories.append(memory_item_dict)
 
-        return formatted_memories
+        return {"results": formatted_memories, "count": count}
 
     def search(
         self,
@@ -2872,6 +2913,8 @@ class AsyncMemory(MemoryBase):
         *,
         filters: Optional[Dict[str, Any]] = None,
         top_k: int = 20,
+        offset: int = 0,
+        count_total: bool = False,
         **kwargs,
     ):
         """
@@ -2882,9 +2925,15 @@ class AsyncMemory(MemoryBase):
                 Must contain at least one of: user_id, agent_id, run_id, app_id.
                 Example: filters={"user_id": "u1", "agent_id": "a1"}
             top_k (int, optional): The maximum number of memories to return. Defaults to 20.
+            offset (int, optional): Number of rows to skip before returning. Used by the
+                paginated V3 list endpoint. Defaults to 0.
+            count_total (bool, optional): When True, includes a ``count`` key in the
+                response with the total number of matching memories (ignoring pagination).
+                Backends that don't support count return ``count=None``. Defaults to False.
 
         Returns:
             dict: A dictionary containing a list of memories under the "results" key.
+                  When ``count_total=True``, additionally contains a ``count`` key.
                   Example for v1.1+: `{"results": [{"id": "...", "memory": "...", ...}]}`
 
         Raises:
@@ -2941,25 +2990,50 @@ class AsyncMemory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"}
         )
 
-        all_memories_result = await self._get_all_from_vector_store(effective_filters, limit)
+        all_memories_result = await self._get_all_from_vector_store(
+            effective_filters, limit, offset=offset, count_total=count_total
+        )
 
-        return {"results": all_memories_result}
+        out = {"results": all_memories_result["results"]}
+        if count_total:
+            out["count"] = all_memories_result.get("count")
+        return out
 
-    async def _get_all_from_vector_store(self, filters, limit):
-        memories_result = await asyncio.to_thread(self.vector_store.list, filters=filters, top_k=limit)
+    async def _get_all_from_vector_store(self, filters, limit, *, offset=0, count_total=False):
+        # Mirrors the sync helper. Some backends accept ``offset`` / ``count_total``;
+        # introspect to avoid passing unsupported kwargs, and only forward when the
+        # caller asked for non-default behavior.
+        list_kwargs = {"filters": filters, "top_k": limit}
+        if offset or count_total:
+            try:
+                list_sig = inspect.signature(self.vector_store.list)
+                params = list_sig.parameters
+                has_var_keyword = any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                )
+                if offset and (has_var_keyword or "offset" in params):
+                    list_kwargs["offset"] = offset
+                if count_total and (has_var_keyword or "count_total" in params):
+                    list_kwargs["count_total"] = count_total
+            except (ValueError, TypeError):
+                pass
+        memories_result = await asyncio.to_thread(self.vector_store.list, **list_kwargs)
 
-        # Handle different vector store return formats by inspecting first element
-        if isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
+        count: Optional[int] = None
+        if isinstance(memories_result, dict) and "results" in memories_result:
+            actual_memories = memories_result["results"]
+            if isinstance(actual_memories, list) and actual_memories and isinstance(actual_memories[0], list):
+                actual_memories = actual_memories[0]
+            if count_total:
+                count = memories_result.get("count")
+        elif isinstance(memories_result, (tuple, list)) and len(memories_result) > 0:
             first_element = memories_result[0]
-
-            # If first element is a container, unwrap one level
             if isinstance(first_element, (list, tuple)):
                 actual_memories = first_element
             else:
-                # First element is a memory object, structure is already flat
                 actual_memories = memories_result
         else:
-            actual_memories = memories_result
+            actual_memories = memories_result or []
 
         promoted_payload_keys = [
             "user_id",
@@ -2992,7 +3066,7 @@ class AsyncMemory(MemoryBase):
 
             formatted_memories.append(memory_item_dict)
 
-        return formatted_memories
+        return {"results": formatted_memories, "count": count}
 
     async def search(
         self,
