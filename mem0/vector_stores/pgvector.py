@@ -590,17 +590,15 @@ class PGVector(VectorStoreBase):
     def list(
         self,
         filters: Optional[dict] = None,
-        top_k: Optional[int] = 100
-    ) -> List[OutputData]:
-        """
-        List all vectors in a collection.
-
-        Args:
-            filters (Dict, optional): Filters to apply to the list.
-            top_k (int, optional): Number of vectors to return. Defaults to 100.
+        top_k: Optional[int] = 100,
+        *,
+        offset: int = 0,
+        count_total: bool = False,
+    ) -> dict:
+        """List vectors with optional pagination + total count.
 
         Returns:
-            List[OutputData]: List of vectors.
+            {"results": [[OutputData, ...]], "count": int | None}
         """
         compiled = self._build_filter_sql(filters)
         if compiled is not None:
@@ -616,12 +614,23 @@ class PGVector(VectorStoreBase):
                 SELECT id, vector, payload
                 FROM {}
                 {}
-                LIMIT %s
+                LIMIT %s OFFSET %s
                 """).format(self._col(), filter_clause),
-                (*filter_params, top_k),
+                (*filter_params, top_k, offset),
             )
-            results = cur.fetchall()
-        return [[OutputData(id=str(r[0]), score=None, payload=r[2]) for r in results]]
+            rows = cur.fetchall()
+
+            count = None
+            if count_total:
+                cur.execute(
+                    sql.SQL("SELECT count(*) FROM {} {}").format(self._col(), filter_clause),
+                    tuple(filter_params),
+                )
+                count_row = cur.fetchone()
+                count = int(count_row[0]) if count_row else 0
+
+        output = [OutputData(id=str(r[0]), score=None, payload=r[2]) for r in rows]
+        return {"results": [output], "count": count}
 
     def __del__(self) -> None:
         """

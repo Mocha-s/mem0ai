@@ -1047,6 +1047,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify result
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 2)
         self.assertEqual(results[0][0].id, self.test_ids[0])
@@ -1095,6 +1097,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify result
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 2)
         self.assertEqual(results[0][0].id, self.test_ids[0])
@@ -1437,6 +1441,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify results
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 1)
         self.assertEqual(results[0][0].id, self.test_ids[0])
@@ -1486,6 +1492,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify results
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 1)
         self.assertEqual(results[0][0].id, self.test_ids[0])
@@ -1535,6 +1543,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify results
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 1)
         self.assertEqual(results[0][0].id, self.test_ids[0])
@@ -1583,6 +1593,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify results
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 1)
         self.assertEqual(results[0][0].id, self.test_ids[0])
@@ -1631,6 +1643,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify results
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 2)
         self.assertEqual(results[0][0].id, self.test_ids[0])
@@ -1679,6 +1693,8 @@ class TestPGVector(unittest.TestCase):
         self.assertTrue(len(list_calls) > 0)
         
         # Verify results
+        # Unwrap dict shape: pgvector.list() returns {"results": [[OutputData, ...]], "count": int|None}
+        results = results["results"]
         self.assertEqual(len(results), 1)  # Returns list of lists
         self.assertEqual(len(results[0]), 2)
         self.assertEqual(results[0][0].id, self.test_ids[0])

@@ -48,8 +48,13 @@ class VectorStoreBase(ABC):
         pass
 
     @abstractmethod
-    def list(self, filters=None, top_k=None):
-        """List all memories."""
+    def list(self, filters=None, top_k=None, *, offset=0, count_total=False):
+        """List memories.
+
+        Returns either the legacy nested-list format ``[[OutputData, ...]]`` or
+        the new dict format ``{"results": [...], "count": int | None}``. New
+        backends should return the dict format. The Memory layer accepts both.
+        """
         pass
 
     @abstractmethod
