@@ -231,27 +231,20 @@ class ListBody(BaseModel):
 
 
 class SearchBody(BaseModel):
-    """Body for `POST /memories/search` — v2 filter dict + reranking."""
-    query: str = Field(..., description="Search query.")
-    filters: Optional[Dict[str, Any]] = Field(None, description="v2 filter dict.")
-    top_k: Optional[int] = Field(None, description="Maximum number of results to return.")
-    threshold: Optional[float] = Field(None, description="Minimum similarity score for results.")
-    rerank: Optional[bool] = Field(
-        None, description="Apply reranker if configured. Defaults to False."
+    """Body for ``POST /v3/memories/search/``. Filters required and must
+    include at least one entity ID."""
+    query: str = Field(..., min_length=1, description="Search query.")
+    filters: Dict[str, Any] = Field(
+        ..., description="V2 filter dict; must include at least one of user_id/agent_id/run_id/app_id."
     )
+    top_k: int = Field(10, ge=1, le=1000, description="Maximum number of results.")
+    threshold: float = Field(0.1, ge=0.0, le=1.0, description="Minimum similarity score.")
+    rerank: bool = Field(False, description="Apply configured reranker.")
     use_criteria: Optional[bool] = Field(
-        None,
-        description=(
-            "Whether to apply criteria-based scoring. Defaults to None — auto-enabled when "
-            "project criteria are configured. Pass false to opt out for this call."
-        ),
+        None, description="Apply criteria-based scoring. Auto-enabled when project criteria are configured."
     )
     criteria: Optional[list] = Field(
-        None,
-        description=(
-            "Per-call override of project-level criteria. List of "
-            "{name, description, weight?} dicts."
-        ),
+        None, description="Per-call override of project criteria — list of {name, description, weight?}."
     )
 
 
@@ -675,29 +668,21 @@ def get_memory(memory_id: str, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
-@app.post("/memories/search", summary="Search memories")
-def search_memories(body: SearchBody, _auth=Depends(verify_auth)):
-    """
-    Semantic + keyword search with v2 filter dict.
-
-    Pass ``rerank=true`` to apply the configured reranker — this is a no-op when
-    no reranker is configured in the active memory config.
-    """
+@app.post("/v3/memories/search/", summary="Search memories (hybrid retrieval)")
+def search_memories_v3(body: SearchBody, _auth=Depends(verify_auth)):
+    """Hybrid retrieval (semantic + BM25 + entity matching). Returns
+    {results: [...]} with combined [0,1] scores."""
+    _require_entity_scope(body.filters)
     try:
-        kwargs: Dict[str, Any] = {}
-        if body.filters is not None:
-            kwargs["filters"] = body.filters
-        if body.top_k is not None:
-            kwargs["top_k"] = body.top_k
-        if body.threshold is not None:
-            kwargs["threshold"] = body.threshold
-        if body.rerank is not None:
-            kwargs["rerank"] = body.rerank
-        if body.use_criteria is not None:
-            kwargs["use_criteria"] = body.use_criteria
-        if body.criteria is not None:
-            kwargs["criteria"] = body.criteria
-        return get_memory_instance().search(query=body.query, **kwargs)
+        return get_memory_instance().search(
+            query=body.query,
+            filters=body.filters,
+            top_k=body.top_k,
+            threshold=body.threshold,
+            rerank=body.rerank,
+            use_criteria=body.use_criteria,
+            criteria=body.criteria,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
