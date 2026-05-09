@@ -3,11 +3,11 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
 from auth import verify_auth
 from errors import upstream_error
-from schemas import MessageResponse
+from schemas import MessageResponse, to_shanghai_iso
 from server_state import get_memory_instance
 
 router = APIRouter(prefix="/entities", tags=["entities"])
@@ -29,6 +29,10 @@ class Entity(BaseModel):
     total_memories: int
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    @field_serializer("created_at", "updated_at")
+    def _ser_dt(self, value: Optional[datetime]) -> Optional[str]:
+        return to_shanghai_iso(value)
 
 
 def _iter_payloads() -> list[dict[str, Any]]:

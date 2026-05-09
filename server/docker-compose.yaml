@@ -26,6 +26,7 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=
+      - TZ=Asia/Shanghai
       - DASHBOARD_URL=${DASHBOARD_URL}
       - APP_DB_NAME=mem0_app
       - JWT_SECRET=${JWT_SECRET}
@@ -41,6 +42,7 @@ services:
       environment:
         - POSTGRES_USER=postgres
         - POSTGRES_PASSWORD=postgres
+        - TZ=Asia/Shanghai
       healthcheck:
         test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "postgres"]
         interval: 5s

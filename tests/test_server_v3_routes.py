@@ -198,3 +198,80 @@ class TestV3MemoryCRUD:
         c, fake_memory, _ = client
         resp = c.post("/v3/memories/delete/", json={"filters": {"user_id": "alice"}})
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Asia/Shanghai timestamp rendering
+# ---------------------------------------------------------------------------
+
+
+class TestTimestampLocalization:
+    """Pin the wire-format invariant: ``created_at``/``updated_at`` are
+    rendered in Asia/Shanghai (``+08:00``) on the JSON output.
+
+    Underlying storage stays UTC — only the JSON serialization layer changes.
+    See ``server/schemas.py:to_shanghai_iso`` and the ``field_serializer``
+    hooks on response models. Container ``TZ`` is set in
+    ``server/docker-compose.yaml`` for log ergonomics; it does not affect
+    these tests.
+    """
+
+    UTC_TS = "2026-05-09T17:01:52.882293+00:00"
+    EXPECTED_OFFSET = "+08:00"
+
+    def test_list_memories_renders_shanghai_offset(self, client):
+        c, fake_memory, _ = client
+        fake_memory.get_all.return_value = {
+            "results": [
+                {
+                    "id": "mem-1",
+                    "memory": "x",
+                    "user_id": "alice",
+                    "created_at": self.UTC_TS,
+                    "updated_at": self.UTC_TS,
+                }
+            ],
+            "count": 1,
+        }
+        resp = c.post("/v3/memories/", json={"filters": {"user_id": "alice"}})
+        assert resp.status_code == 200
+        item = resp.json()["results"][0]
+        assert item["created_at"].endswith(self.EXPECTED_OFFSET), item["created_at"]
+        assert item["updated_at"].endswith(self.EXPECTED_OFFSET), item["updated_at"]
+        # Same instant — 17:01 UTC == 01:01 next day in Shanghai
+        assert "2026-05-10T01:01:52" in item["created_at"]
+
+    def test_get_memory_by_id_renders_shanghai_offset(self, client):
+        c, fake_memory, _ = client
+        fake_memory.get.return_value = {
+            "id": "mem-1",
+            "memory": "x",
+            "created_at": self.UTC_TS,
+            "updated_at": self.UTC_TS,
+        }
+        resp = c.get("/v3/memories/mem-1/")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["created_at"].endswith(self.EXPECTED_OFFSET), body["created_at"]
+        assert body["updated_at"].endswith(self.EXPECTED_OFFSET), body["updated_at"]
+
+    def test_search_results_render_shanghai_offset(self, client):
+        c, fake_memory, _ = client
+        fake_memory.search.return_value = {
+            "results": [
+                {
+                    "id": "mem-1",
+                    "memory": "x",
+                    "score": 0.9,
+                    "created_at": self.UTC_TS,
+                    "updated_at": self.UTC_TS,
+                }
+            ]
+        }
+        resp = c.post(
+            "/v3/memories/search/",
+            json={"query": "x", "filters": {"user_id": "alice"}},
+        )
+        assert resp.status_code == 200
+        item = resp.json()["results"][0]
+        assert item["created_at"].endswith(self.EXPECTED_OFFSET), item["created_at"]

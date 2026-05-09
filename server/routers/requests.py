@@ -2,13 +2,14 @@ from datetime import datetime
 import uuid
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from auth import require_auth
 from db import get_db
 from models import RequestLog, User
+from schemas import to_shanghai_iso
 
 router = APIRouter(prefix="/requests", tags=["requests"])
 
@@ -23,6 +24,10 @@ class RequestLogItem(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("created_at")
+    def _ser_created_at(self, value: datetime) -> str | None:
+        return to_shanghai_iso(value)
 
 
 API_KEY_AUTH_TYPES = ("api_key", "admin_api_key")

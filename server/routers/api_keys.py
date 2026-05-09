@@ -1,14 +1,14 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from auth import generate_api_key, require_auth
 from db import get_db
 from models import APIKey, User
-from schemas import MessageResponse
+from schemas import MessageResponse, to_shanghai_iso
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
@@ -24,6 +24,10 @@ class CreateKeyResponse(BaseModel):
     key_prefix: str
     created_at: datetime
 
+    @field_serializer("created_at")
+    def _ser_created_at(self, value: datetime) -> str | None:
+        return to_shanghai_iso(value)
+
 
 class KeyListItem(BaseModel):
     id: str
@@ -33,6 +37,10 @@ class KeyListItem(BaseModel):
     last_used_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("created_at", "last_used_at")
+    def _ser_dt(self, value: datetime | None) -> str | None:
+        return to_shanghai_iso(value)
 
 
 @router.get("", response_model=list[KeyListItem])

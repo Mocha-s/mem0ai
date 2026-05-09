@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_serializer
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -20,7 +20,7 @@ from auth import (
 from db import get_db
 from models import User
 from rate_limit import limiter
-from schemas import MessageResponse
+from schemas import MessageResponse, to_shanghai_iso
 from telemetry import capture_admin_registered, capture_onboarding_completed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -79,6 +79,10 @@ class UserResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("created_at")
+    def _ser_created_at(self, value: datetime) -> str | None:
+        return to_shanghai_iso(value)
 
 
 class SetupStatusResponse(BaseModel):

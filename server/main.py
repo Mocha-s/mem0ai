@@ -34,7 +34,7 @@ from routers import api_keys as api_keys_router
 from routers import entities as entities_router
 from routers import projects as projects_router
 from routers import requests as requests_router
-from schemas import MessageResponse
+from schemas import MessageResponse, localize_response_timestamps, to_shanghai_iso
 from server_state import (
     ProjectFieldsRejected,
     get_current_config,
@@ -530,10 +530,10 @@ def get_event(event_id: uuid.UUID, _auth=Depends(verify_auth)):
         return {
             "event_id": str(ev.id),
             "status": ev.status,
-            "result": ev.result,
+            "result": localize_response_timestamps(ev.result),
             "error": ev.error,
-            "created_at": ev.created_at,
-            "updated_at": ev.updated_at,
+            "created_at": to_shanghai_iso(ev.created_at),
+            "updated_at": to_shanghai_iso(ev.updated_at),
         }
 
 
@@ -564,10 +564,10 @@ def list_events(
                 {
                     "event_id": str(ev.id),
                     "status": ev.status,
-                    "result": ev.result,
+                    "result": localize_response_timestamps(ev.result),
                     "error": ev.error,
-                    "created_at": ev.created_at,
-                    "updated_at": ev.updated_at,
+                    "created_at": to_shanghai_iso(ev.created_at),
+                    "updated_at": to_shanghai_iso(ev.updated_at),
                 }
                 for ev in events
             ]
@@ -704,7 +704,7 @@ def list_memories_v3(
         "count": count,
         "next": _build_page_url(request, page + 1, page_size) if has_next else None,
         "previous": _build_page_url(request, page - 1, page_size) if page > 1 else None,
-        "results": results,
+        "results": localize_response_timestamps(results),
     }
 
 
@@ -712,7 +712,7 @@ def list_memories_v3(
 def get_memory(memory_id: str, _auth=Depends(verify_auth)):
     """Retrieve a specific memory by ID."""
     try:
-        return get_memory_instance().get(memory_id)
+        return localize_response_timestamps(get_memory_instance().get(memory_id))
     except Exception:
         raise upstream_error()
 
@@ -723,14 +723,16 @@ def search_memories_v3(body: SearchBody, _auth=Depends(verify_auth)):
     {results: [...]} with combined [0,1] scores."""
     _require_entity_scope(body.filters)
     try:
-        return get_memory_instance().search(
-            query=body.query,
-            filters=body.filters,
-            top_k=body.top_k,
-            threshold=body.threshold,
-            rerank=body.rerank,
-            use_criteria=body.use_criteria,
-            criteria=body.criteria,
+        return localize_response_timestamps(
+            get_memory_instance().search(
+                query=body.query,
+                filters=body.filters,
+                top_k=body.top_k,
+                threshold=body.threshold,
+                rerank=body.rerank,
+                use_criteria=body.use_criteria,
+                criteria=body.criteria,
+            )
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -742,8 +744,10 @@ def search_memories_v3(body: SearchBody, _auth=Depends(verify_auth)):
 def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(verify_auth)):
     """Update an existing memory."""
     try:
-        return get_memory_instance().update(
-            memory_id=memory_id, data=updated_memory.text, metadata=updated_memory.metadata
+        return localize_response_timestamps(
+            get_memory_instance().update(
+                memory_id=memory_id, data=updated_memory.text, metadata=updated_memory.metadata
+            )
         )
     except Exception:
         raise upstream_error()
@@ -753,7 +757,7 @@ def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(ve
 def memory_history(memory_id: str, _auth=Depends(verify_auth)):
     """Retrieve memory history."""
     try:
-        return get_memory_instance().history(memory_id=memory_id)
+        return localize_response_timestamps(get_memory_instance().history(memory_id=memory_id))
     except Exception:
         raise upstream_error()
 
