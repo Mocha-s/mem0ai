@@ -278,3 +278,24 @@ The `events` table grows unbounded. Run a periodic cleanup:
 ```sql
 DELETE FROM events WHERE created_at < now() - interval '30 days';
 ```
+
+### Deploying these changes
+
+Two ops steps are required when upgrading a running OSS deployment:
+
+1. **Restart the `mem0` container** so it re-runs `pip install /app/mem0_src` and
+   picks up the updated SDK. uvicorn `--reload` only reloads `/app/main.py`; it
+   does **not** re-import packages from site-packages, so the new
+   `Memory.get_all(offset, count_total)` and `pgvector.list(...)` won't land
+   without a container restart.
+
+2. **Apply migration 008.** The compose `command` runs `alembic upgrade head`
+   automatically at boot, so the restart in step 1 covers this. If you deploy
+   the new code without a restart, the startup sweep will log
+   `psycopg.errors.UndefinedTable: relation "events" does not exist` and
+   gracefully continue — but `POST /v3/memories/add/` will then fail when it
+   tries to insert into the missing table. To apply manually:
+
+   ```bash
+   docker exec <mem0-container> alembic upgrade head
+   ```
