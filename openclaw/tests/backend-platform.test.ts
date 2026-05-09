@@ -155,8 +155,56 @@ describe("PlatformBackend", () => {
   });
 
   // -- add() ---------------------------------------------------------------
-  it("add() sends POST to /v1/memories/ with correct body structure", async () => {
-    const mock = mockFetchResponse(200, { id: "mem-1", memory: "test" });
+  // V3 contract: add() POSTs to /v3/memories/add/ which returns
+  // {event_id, status: "PENDING"}, then polls GET /v1/event/{id}/ until the
+  // status reaches SUCCEEDED or FAILED. The polled event.result preserves the
+  // legacy {results: [...]} shape so callers don't notice the cutover.
+  function mockV3AddSequence(
+    finalEvent: Record<string, unknown>,
+    pendingPolls = 0,
+  ): typeof fetch {
+    let pollCount = 0;
+    return vi.fn().mockImplementation(async (url: string) => {
+      const isAdd = url.endsWith("/v3/memories/add/");
+      const isEvent = url.includes("/v1/event/");
+      if (isAdd) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: vi.fn().mockResolvedValue({
+            event_id: "evt-test-1",
+            status: "PENDING",
+            message: "queued",
+          }),
+        };
+      }
+      if (isEvent) {
+        const body =
+          pollCount < pendingPolls
+            ? { event_id: "evt-test-1", status: "PENDING" }
+            : finalEvent;
+        pollCount += 1;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          json: vi.fn().mockResolvedValue(body),
+        };
+      }
+      throw new Error(`unexpected URL in mock: ${url}`);
+    }) as unknown as typeof fetch;
+  }
+
+  it("add() POSTs to /v3/memories/add/ then returns the polled event result", async () => {
+    const successResult = {
+      results: [{ id: "mem-1", memory: "test", event: "ADD" }],
+    };
+    const mock = mockV3AddSequence({
+      event_id: "evt-test-1",
+      status: "SUCCEEDED",
+      result: successResult,
+    });
     vi.stubGlobal("fetch", mock);
 
     const backend = createBackend();
@@ -164,23 +212,32 @@ describe("PlatformBackend", () => {
       userId: "user-1",
     });
 
-    expect(mock).toHaveBeenCalledOnce();
-    const [url, opts] = (mock as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("https://api.mem0.ai/v1/memories/");
-    expect(opts.method).toBe("POST");
-    expect(opts.headers).toMatchObject({
+    const calls = (mock as ReturnType<typeof vi.fn>).mock.calls;
+    // First call: POST /v3/memories/add/
+    expect(calls[0][0]).toBe("https://api.mem0.ai/v3/memories/add/");
+    expect(calls[0][1].method).toBe("POST");
+    expect(calls[0][1].headers).toMatchObject({
       Authorization: `Token ${API_KEY}`,
       "Content-Type": "application/json",
     });
-
-    const body = JSON.parse(opts.body);
+    const body = JSON.parse(calls[0][1].body);
     expect(body.messages).toEqual([{ role: "user", content: "Remember this" }]);
     expect(body.user_id).toBe("user-1");
-    expect(result).toEqual({ id: "mem-1", memory: "test" });
+
+    // Second call: GET /v1/event/evt-test-1/
+    expect(calls[1][0]).toBe("https://api.mem0.ai/v1/event/evt-test-1/");
+    expect(calls[1][1].method).toBe("GET");
+
+    // Caller-visible shape preserved (the legacy {results: [...]} envelope)
+    expect(result).toEqual(successResult);
   });
 
   it("add() passes messages directly when provided", async () => {
-    const mock = mockFetchResponse(200, { id: "mem-2" });
+    const mock = mockV3AddSequence({
+      event_id: "evt-test-1",
+      status: "SUCCEEDED",
+      result: { results: [{ id: "mem-2", event: "ADD" }] },
+    });
     vi.stubGlobal("fetch", mock);
 
     const messages = [
@@ -196,8 +253,46 @@ describe("PlatformBackend", () => {
     expect(body.messages).toEqual(messages);
   });
 
+  it("add() throws when the polled event reports FAILED", async () => {
+    const mock = mockV3AddSequence({
+      event_id: "evt-test-1",
+      status: "FAILED",
+      error: "extraction crashed",
+    });
+    vi.stubGlobal("fetch", mock);
+
+    const backend = createBackend();
+    await expect(backend.add("anything")).rejects.toThrow(
+      /Memory add failed: extraction crashed/,
+    );
+  });
+
+  it("add() polls past PENDING responses until SUCCEEDED", async () => {
+    const successResult = { results: [{ id: "mem-poll", event: "ADD" }] };
+    const mock = mockV3AddSequence(
+      {
+        event_id: "evt-test-1",
+        status: "SUCCEEDED",
+        result: successResult,
+      },
+      1, // one PENDING poll before SUCCEEDED
+    );
+    vi.stubGlobal("fetch", mock);
+
+    const backend = createBackend();
+    const result = await backend.add("hello");
+
+    const calls = (mock as ReturnType<typeof vi.fn>).mock.calls;
+    // 1 add + 2 event polls (one PENDING, one SUCCEEDED)
+    expect(calls).toHaveLength(3);
+    expect(calls[0][0]).toBe("https://api.mem0.ai/v3/memories/add/");
+    expect(calls[1][0]).toBe("https://api.mem0.ai/v1/event/evt-test-1/");
+    expect(calls[2][0]).toBe("https://api.mem0.ai/v1/event/evt-test-1/");
+    expect(result).toEqual(successResult);
+  });
+
   // -- search() ------------------------------------------------------------
-  it("search() sends POST to /v2/memories/search/", async () => {
+  it("search() sends POST to /v3/memories/search/", async () => {
     const mock = mockFetchResponse(200, [
       { id: "mem-1", score: 0.95, memory: "test" },
     ]);
@@ -208,7 +303,7 @@ describe("PlatformBackend", () => {
 
     expect(mock).toHaveBeenCalledOnce();
     const [url, opts] = (mock as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("https://api.mem0.ai/v2/memories/search/");
+    expect(url).toBe("https://api.mem0.ai/v3/memories/search/");
     expect(opts.method).toBe("POST");
 
     const body = JSON.parse(opts.body);
@@ -231,7 +326,7 @@ describe("PlatformBackend", () => {
   });
 
   // -- get() ---------------------------------------------------------------
-  it("get() sends GET to /v1/memories/{id}/", async () => {
+  it("get() sends GET to /v3/memories/{id}/", async () => {
     const mock = mockFetchResponse(200, { id: "mem-abc", memory: "test" });
     vi.stubGlobal("fetch", mock);
 
@@ -240,13 +335,13 @@ describe("PlatformBackend", () => {
 
     expect(mock).toHaveBeenCalledOnce();
     const [url, opts] = (mock as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("https://api.mem0.ai/v1/memories/mem-abc/");
+    expect(url).toBe("https://api.mem0.ai/v3/memories/mem-abc/");
     expect(opts.method).toBe("GET");
     expect(result).toEqual({ id: "mem-abc", memory: "test" });
   });
 
   // -- delete() with memoryId ----------------------------------------------
-  it("delete() with memoryId sends DELETE to /v1/memories/{id}/", async () => {
+  it("delete() with memoryId sends DELETE to /v3/memories/{id}/", async () => {
     const mock = mockFetchResponse(200, { deleted: true });
     vi.stubGlobal("fetch", mock);
 
@@ -255,14 +350,14 @@ describe("PlatformBackend", () => {
 
     expect(mock).toHaveBeenCalledOnce();
     const [url, opts] = (mock as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("https://api.mem0.ai/v1/memories/mem-del-1/");
+    expect(url).toBe("https://api.mem0.ai/v3/memories/mem-del-1/");
     expect(opts.method).toBe("DELETE");
     expect(result).toEqual({ deleted: true });
   });
 
   // -- delete() with all=true ----------------------------------------------
-  it("delete() with all=true sends DELETE to /v1/memories/ with scope params", async () => {
-    const mock = mockFetchResponse(200, { deleted: 5 });
+  it("delete() with all=true POSTs to /v3/memories/delete/ with filters body", async () => {
+    const mock = mockFetchResponse(200, { message: "All relevant memories deleted" });
     vi.stubGlobal("fetch", mock);
 
     const backend = createBackend();
@@ -274,11 +369,18 @@ describe("PlatformBackend", () => {
 
     expect(mock).toHaveBeenCalledOnce();
     const [url, opts] = (mock as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe(
-      "https://api.mem0.ai/v1/memories/?user_id=user-1&agent_id=agent-1",
-    );
-    expect(opts.method).toBe("DELETE");
-    expect(result).toEqual({ deleted: 5 });
+    expect(url).toBe("https://api.mem0.ai/v3/memories/delete/");
+    expect(opts.method).toBe("POST");
+
+    // Body should carry a scoped {filters: {...}} dict (V3 contract requires
+    // entity scope; an empty filter is rejected server-side).
+    const body = JSON.parse(opts.body);
+    expect(body).toEqual({
+      filters: {
+        AND: [{ user_id: "user-1" }, { agent_id: "agent-1" }],
+      },
+    });
+    expect(result).toEqual({ message: "All relevant memories deleted" });
   });
 
   // -- status() ------------------------------------------------------------

@@ -110,9 +110,46 @@ export class PlatformBackend implements Backend {
     if (opts.infer === false) payload.infer = false;
     if (opts.categories) payload.categories = opts.categories;
 
-    return (await this._request("POST", "/v1/memories/", {
+    // V3 contract: POST /v3/memories/add/ is async — returns event_id, then
+    // poll GET /v1/event/{event_id}/ until SUCCEEDED or FAILED. The polled
+    // event.result preserves the legacy {results: [...]} shape that callers
+    // (provider/tools) still expect, so this wrapper keeps the Backend
+    // contract stable across the V1→V3 cutover.
+    const queued = (await this._request("POST", "/v3/memories/add/", {
       json: payload,
-    })) as Record<string, unknown>;
+    })) as { event_id: string; status?: string };
+
+    const eventId = queued.event_id;
+    if (!eventId) {
+      throw new Error(
+        `V3 add did not return event_id; got: ${JSON.stringify(queued)}`,
+      );
+    }
+
+    const POLL_TIMEOUT_MS = 60_000;
+    const POLL_BACKOFF_START_MS = 200;
+    const POLL_BACKOFF_CAP_MS = 2_000;
+
+    const startMs = Date.now();
+    let waitMs = POLL_BACKOFF_START_MS;
+    while (Date.now() - startMs < POLL_TIMEOUT_MS) {
+      const ev = (await this.getEvent(eventId)) as {
+        status?: string;
+        result?: unknown;
+        error?: string;
+      };
+      if (ev.status === "SUCCEEDED") {
+        return (ev.result ?? {}) as Record<string, unknown>;
+      }
+      if (ev.status === "FAILED") {
+        throw new Error(`Memory add failed: ${ev.error ?? "unknown error"}`);
+      }
+      await new Promise((r) => setTimeout(r, waitMs));
+      waitMs = Math.min(waitMs * 2, POLL_BACKOFF_CAP_MS);
+    }
+    throw new Error(
+      `Memory add timed out after ${POLL_TIMEOUT_MS}ms waiting for event ${eventId}`,
+    );
   }
 
   private _buildFilters(opts: {
@@ -168,7 +205,7 @@ export class PlatformBackend implements Backend {
     if (opts.rerank) payload.rerank = true;
     if (opts.fields) payload.fields = opts.fields;
 
-    const result = (await this._request("POST", "/v2/memories/search/", {
+    const result = (await this._request("POST", "/v3/memories/search/", {
       json: payload,
     })) as unknown;
     if (Array.isArray(result)) return result;
@@ -177,7 +214,7 @@ export class PlatformBackend implements Backend {
   }
 
   async get(memoryId: string): Promise<Record<string, unknown>> {
-    return (await this._request("GET", `/v1/memories/${memoryId}/`)) as Record<
+    return (await this._request("GET", `/v3/memories/${memoryId}/`)) as Record<
       string,
       unknown
     >;
@@ -218,7 +255,7 @@ export class PlatformBackend implements Backend {
     });
     if (apiFilters) payload.filters = apiFilters;
 
-    const result = (await this._request("POST", "/v2/memories/", {
+    const result = (await this._request("POST", "/v3/memories/", {
       json: payload,
       params,
     })) as unknown;
@@ -235,7 +272,7 @@ export class PlatformBackend implements Backend {
     const payload: Record<string, unknown> = {};
     if (content) payload.text = content;
     if (metadata) payload.metadata = metadata;
-    return (await this._request("PUT", `/v1/memories/${memoryId}/`, {
+    return (await this._request("PUT", `/v3/memories/${memoryId}/`, {
       json: payload,
     })) as Record<string, unknown>;
   }
@@ -245,19 +282,24 @@ export class PlatformBackend implements Backend {
     opts: DeleteOptions = {},
   ): Promise<Record<string, unknown>> {
     if (opts.all) {
-      const params: Record<string, string> = {};
-      if (opts.userId) params.user_id = opts.userId;
-      if (opts.agentId) params.agent_id = opts.agentId;
-      if (opts.appId) params.app_id = opts.appId;
-      if (opts.runId) params.run_id = opts.runId;
-      return (await this._request("DELETE", "/v1/memories/", {
-        params,
+      // V3 contract: bulk delete by filters uses POST /v3/memories/delete/
+      // with a body of {filters: {...}}, not DELETE-with-body. The filters
+      // dict must scope by entity (user_id/agent_id/app_id/run_id) — server
+      // rejects empty filters to prevent project-wide wipes.
+      const filters = this._buildFilters({
+        userId: opts.userId,
+        agentId: opts.agentId,
+        appId: opts.appId,
+        runId: opts.runId,
+      });
+      return (await this._request("POST", "/v3/memories/delete/", {
+        json: { filters: filters ?? {} },
       })) as Record<string, unknown>;
     }
     if (memoryId) {
       return (await this._request(
         "DELETE",
-        `/v1/memories/${memoryId}/`,
+        `/v3/memories/${memoryId}/`,
       )) as Record<string, unknown>;
     }
     throw new Error("Either memoryId or --all is required");
