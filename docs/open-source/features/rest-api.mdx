@@ -17,9 +17,11 @@ The Mem0 REST API server exposes every OSS memory operation over HTTP. Run it al
   **First time self-hosting, or upgrading from a pre-1.x build?** Start at [Self-Hosted Setup](/open-source/setup). It walks through the stack, the setup wizard, and the upgrade path for deployments that relied on open endpoints or `ADMIN_API_KEY`. This page covers the API surface and auth modes only.
 </Warning>
 
-<Warning>
-  **OSS vs Platform API paths:** The self-hosted OSS server does **not** use the `/v1/` prefix. For example, the endpoint is `POST /memories`, not `POST /v1/memories/`. The [API Reference](/api-reference) documents the hosted platform at `api.mem0.ai` which uses `/v1/` paths — those do not apply to the OSS server.
-</Warning>
+<Info>
+  **Aligned with platform V3:** the OSS server now uses the same
+  `/v3/memories/*` paths as `api.mem0.ai`. The async add → poll-by-event_id
+  flow uses `GET /v1/event/{event_id}/`, also matching the platform contract.
+</Info>
 
 <Warning>
   Enable API key authentication (see below) and HTTPS before exposing the server to anything beyond your internal network.
@@ -203,26 +205,35 @@ ADMIN_API_KEY=your-long-admin-key
 ### Create and search memories via HTTP
 
 ```bash
-curl -X POST http://localhost:8888/memories \
+# 1. Queue an async add — returns event_id immediately
+curl -X POST http://localhost:8888/v3/memories/add/ \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <your-api-key>" \
   -d '{
     "messages": [
       {"role": "user", "content": "I love fresh vegetable pizza."}
     ],
     "user_id": "alice"
   }'
+# Response: {"event_id": "abc-123", "status": "PENDING", ...}
+
+# 2. Poll the event until SUCCEEDED or FAILED
+curl http://localhost:8888/v1/event/abc-123/ \
+  -H "X-API-Key: <your-api-key>"
 ```
 
 <Info icon="check">
-  Expect a JSON response containing the new memory IDs and events (`ADD`, etc.).
+  Status flips from `PENDING` to `SUCCEEDED` once the BackgroundTask
+  finishes; `result` then contains the new memory IDs and ADD/UPDATE events.
 </Info>
 
 ```bash
-curl -X POST http://localhost:8888/search \
+curl -X POST http://localhost:8888/v3/memories/search/ \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <your-api-key>" \
   -d '{
     "query": "vegetable",
-    "user_id": "alice"
+    "filters": {"user_id": "alice"}
   }'
 ```
 
@@ -240,24 +251,27 @@ curl -X POST http://localhost:8888/search \
 
 ## Endpoint reference
 
-The OSS REST server exposes the following endpoints. None use the `/v1/` prefix.
+The OSS REST server exposes the following endpoints, aligned with the platform `/v3/memories/*` contract.
 
 ### Memory operations
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/configure` | Set memory configuration. Rejects unbundled providers with a 400 |
-| `GET` | `/configure` | Get the current memory configuration |
-| `GET` | `/configure/providers` | List the LLM and embedder providers bundled in the container |
-| `POST` | `/memories` | Create memories |
-| `GET` | `/memories` | Get all memories (filter by `user_id`, `agent_id`, or `run_id`) |
-| `GET` | `/memories/{memory_id}` | Get a specific memory |
-| `PUT` | `/memories/{memory_id}` | Update a memory |
-| `DELETE` | `/memories/{memory_id}` | Delete a specific memory |
-| `DELETE` | `/memories` | Delete all memories for an identifier |
-| `GET` | `/memories/{memory_id}/history` | Get memory history |
-| `POST` | `/search` | Search memories |
-| `POST` | `/reset` | Reset all memories |
+| `POST` | `/configure` | Set memory configuration. Rejects unbundled providers with 400 |
+| `GET`  | `/configure` | Get the current memory configuration |
+| `GET`  | `/configure/providers` | List bundled LLM and embedder providers |
+| `POST` | `/v3/memories/add/` | Queue an async memory add. Returns `event_id` |
+| `POST` | `/v3/memories/` | Paginated list — `{count, next, previous, results}` |
+| `POST` | `/v3/memories/search/` | Hybrid search (semantic + BM25 + entity boost) |
+| `GET`  | `/v3/memories/{memory_id}/` | Get a specific memory |
+| `PUT`  | `/v3/memories/{memory_id}/` | Update a memory |
+| `DELETE` | `/v3/memories/{memory_id}/` | Delete a specific memory |
+| `POST` | `/v3/memories/delete/` | Bulk delete by filter dict |
+| `GET`  | `/v3/memories/{memory_id}/history/` | Memory change history |
+| `POST` | `/v3/memories/{memory_id}/feedback/` | Record POSITIVE/NEGATIVE/VERY_NEGATIVE feedback |
+| `GET`  | `/v1/event/{event_id}/` | Poll the status of an async add |
+| `POST` | `/generate-instructions` | Generate custom instructions from a use case |
+| `POST` | `/reset` | Wipe all memories |
 
 ### Authentication
 
