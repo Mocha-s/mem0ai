@@ -219,3 +219,62 @@ assert "results" in all_memories
 
 print("✅ Migration successful!")
 ```
+
+## V3 API Migration
+
+The OSS REST server now mirrors the hosted-platform V3 contract. Old paths
+return **404** — there is no deprecation window.
+
+### Path mapping
+
+| Old | New |
+|---|---|
+| `POST /memories` | `POST /v3/memories/add/` (now async) |
+| `POST /memories/list` | `POST /v3/memories/` (paginated) |
+| `POST /memories/search` | `POST /v3/memories/search/` (filters required) |
+| `GET /memories/{id}` | `GET /v3/memories/{id}/` |
+| `PUT /memories/{id}` | `PUT /v3/memories/{id}/` |
+| `DELETE /memories/{id}` | `DELETE /v3/memories/{id}/` |
+| `POST /memories/delete` | `POST /v3/memories/delete/` |
+| `GET /memories/{id}/history` | `GET /v3/memories/{id}/history/` |
+| `POST /memories/{id}/feedback` | `POST /v3/memories/{id}/feedback/` |
+| — | `GET /v1/event/{event_id}/` (new — poll async add status) |
+
+### Async add flow
+
+```bash
+curl -X POST http://localhost:8888/v3/memories/add/ \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "I love jazz"}], "user_id": "alice"}'
+# Response: {"event_id": "abc-123", "status": "PENDING", ...}
+
+curl http://localhost:8888/v1/event/abc-123/
+# Response: {"status": "SUCCEEDED", "result": {...}}
+```
+
+### Pagination
+
+```bash
+curl -X POST 'http://localhost:8888/v3/memories/?page=1&page_size=50' \
+  -H "Content-Type: application/json" \
+  -d '{"filters": {"user_id": "alice"}}'
+# Response: {"count": 230, "next": "...page=2...", "previous": null, "results": [...]}
+```
+
+### Search filter requirement
+
+Search now **requires** `filters` and at least one entity ID:
+
+```json
+{"query": "music", "filters": {"user_id": "alice"}}
+```
+
+Empty filters or filters without an entity ID return HTTP 400.
+
+### Operational note: events table growth
+
+The `events` table grows unbounded. Run a periodic cleanup:
+
+```sql
+DELETE FROM events WHERE created_at < now() - interval '30 days';
+```
