@@ -103,3 +103,22 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
+
+
+class Event(Base):
+    """Async-add event tracking. Created by POST /v3/memories/add/, polled
+    via GET /v1/event/{event_id}/. Mirrors the platform's event_id contract."""
+
+    __tablename__ = "events"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
+    status: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(_JsonType, nullable=False)
+    result: Mapped[dict | None] = mapped_column(_JsonType, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
