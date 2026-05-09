@@ -32,8 +32,13 @@ class Entity(BaseModel):
 
 
 def _iter_payloads() -> list[dict[str, Any]]:
+    # Lazy import to avoid a circular dependency: server/main.py imports this
+    # router at module load, so a top-level `from main import ...` would
+    # resolve before the helper is defined.
+    from main import _flatten_vector_store_list_result
+
     results = get_memory_instance().vector_store.list(top_k=SCAN_LIMIT)
-    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
+    rows = _flatten_vector_store_list_result(results)
     return [getattr(row, "payload", None) or {} for row in rows]
 
 

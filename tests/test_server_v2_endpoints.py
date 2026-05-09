@@ -109,6 +109,29 @@ class TestListEndpoint:
         mock.get_all.assert_not_called()
         mock.vector_store.list.assert_called_once()
 
+    def test_list_admin_path_handles_pgvector_dict_shape(self, client):
+        """Regression: ``_list_all_memories`` must flatten pgvector's dict shape.
+
+        Pre-fix, the defensive ternary fell through to ``results or []`` and
+        iterated the dict's keys (``"results"``, ``"count"``), silently
+        emitting empty rows. After the fix, the helper unwraps the rows.
+        """
+        c, mock = client
+        row = MagicMock()
+        row.id = "mem-99"
+        row.payload = {"data": "remember the milk", "user_id": "alice"}
+        # pgvector wraps inside one extra list to preserve legacy [0] indexing
+        mock.vector_store.list.return_value = {"results": [[row]], "count": 1}
+
+        resp = c.post("/memories/list", json={"filters": {}})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "results" in body and len(body["results"]) == 1
+        assert body["results"][0]["id"] == "mem-99"
+        assert body["results"][0]["memory"] == "remember the milk"
+        assert body["results"][0]["user_id"] == "alice"
+
     def test_list_value_error_returns_400(self, client):
         c, mock = client
         mock.get_all.side_effect = ValueError("bad filter")

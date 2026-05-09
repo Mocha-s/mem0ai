@@ -1153,3 +1153,103 @@ def test_process_telemetry_filters_handles_operator_dicts():
     assert set(keys) == {"user_id", "app_id"}
 
 
+# ─── Regression: vector_store.list shape adapter for delete_all ────────────────
+# pgvector after V3 returns ``{"results": [[...]], "count": ...}`` from list().
+# delete_all used to do ``[0]`` indexing, which raises ``KeyError`` on the dict
+# shape. The fix routes both paths through ``_flatten_vector_store_list_result``.
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_delete_all_handles_pgvector_dict_shape(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """delete_all must handle pgvector's dict {"results": [[...]], "count": ...}."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mem1 = MagicMock(id="m1")
+    mem2 = MagicMock(id="m2")
+    # pgvector wraps the rows inside one extra list to preserve legacy [0] indexing
+    mock_vector_store.list.return_value = {"results": [[mem1, mem2]], "count": None}
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+    memory._delete_memory = MagicMock()
+
+    result = memory.delete_all(user_id="alice")
+
+    assert memory._delete_memory.call_count == 2
+    deleted_ids = {call.args[0] for call in memory._delete_memory.call_args_list}
+    assert deleted_ids == {"m1", "m2"}
+    assert result["message"] == "Memories deleted successfully!"
+
+
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+def test_delete_all_handles_legacy_list_shape(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """delete_all must remain backward-compatible with the legacy flat list."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mem1 = MagicMock(id="m1")
+    mem2 = MagicMock(id="m2")
+    # Legacy backends that return a flat list of OutputData
+    mock_vector_store.list.return_value = [mem1, mem2]
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import Memory as MemoryClass
+    memory = MemoryClass(MemoryConfig())
+    memory._delete_memory = MagicMock()
+
+    result = memory.delete_all(user_id="alice")
+
+    assert memory._delete_memory.call_count == 2
+    deleted_ids = {call.args[0] for call in memory._delete_memory.call_args_list}
+    assert deleted_ids == {"m1", "m2"}
+    assert result["message"] == "Memories deleted successfully!"
+
+
+@pytest.mark.asyncio
+@patch('mem0.utils.factory.EmbedderFactory.create')
+@patch('mem0.utils.factory.VectorStoreFactory.create')
+@patch('mem0.utils.factory.LlmFactory.create')
+@patch('mem0.memory.storage.SQLiteManager')
+async def test_async_delete_all_handles_pgvector_dict_shape(
+    mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory
+):
+    """AsyncMemory.delete_all must handle pgvector's dict shape too."""
+    mock_embedder_factory.return_value = MagicMock()
+    mock_vector_store = MagicMock()
+    mem1 = MagicMock(id="m1")
+    mem2 = MagicMock(id="m2")
+    mock_vector_store.list.return_value = {"results": [[mem1, mem2]], "count": None}
+    mock_vector_factory.return_value = mock_vector_store
+    mock_llm_factory.return_value = MagicMock()
+    mock_sqlite.return_value = MagicMock()
+
+    from mem0.memory.main import AsyncMemory
+
+    async def _async_noop(*_args, **_kwargs):
+        return None
+
+    memory = AsyncMemory(MemoryConfig())
+    memory._delete_memory = MagicMock(side_effect=_async_noop)
+
+    result = await memory.delete_all(user_id="alice")
+
+    assert memory._delete_memory.call_count == 2
+    deleted_ids = {call.args[0] for call in memory._delete_memory.call_args_list}
+    assert deleted_ids == {"m1", "m2"}
+    assert result["message"] == "Memories deleted successfully!"
+
+

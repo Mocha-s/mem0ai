@@ -490,6 +490,30 @@ def _build_session_scope(filters):
     return "&".join(parts)
 
 
+def _flatten_vector_store_list_result(result):
+    """Adapter for vector_store.list() returns.
+
+    Accepts the new dict shape ``{"results": [...], "count": ...}`` (with or
+    without pgvector's extra wrapping list) or the legacy list / nested-list /
+    tuple shapes, and returns a flat list of ``OutputData`` rows.
+
+    This exists so callers that only need the flat row list (``delete_all``,
+    admin sweeps) don't have to duplicate the shape-sniffing logic that lives
+    inside ``_get_all_from_vector_store``.
+    """
+    if isinstance(result, dict) and "results" in result:
+        rows = result["results"]
+        # pgvector wraps inside one extra list to preserve legacy [0] indexing
+        if isinstance(rows, list) and rows and isinstance(rows[0], list):
+            return rows[0]
+        return rows or []
+    if isinstance(result, tuple) and result:
+        result = result[0]
+    if isinstance(result, list) and result and isinstance(result[0], list):
+        return result[0]
+    return result or []
+
+
 setup_config()
 logger = logging.getLogger(__name__)
 
@@ -1961,7 +1985,7 @@ class Memory(MemoryBase):
         keys, encoded_ids = process_telemetry_filters(effective_filters)
         capture_event("mem0.delete_all", self, {"keys": keys, "encoded_ids": encoded_ids, "sync_type": "sync"})
         # delete all vector memories and reset the collections
-        memories = self.vector_store.list(filters=effective_filters)[0]
+        memories = _flatten_vector_store_list_result(self.vector_store.list(filters=effective_filters))
         for memory in memories:
             self._delete_memory(memory.id)
 
@@ -3602,15 +3626,16 @@ class AsyncMemory(MemoryBase):
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
         capture_event("mem0.delete_all", self, {"keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"})
-        memories = await asyncio.to_thread(self.vector_store.list, filters=effective_filters)
+        raw_list_result = await asyncio.to_thread(self.vector_store.list, filters=effective_filters)
+        memories = _flatten_vector_store_list_result(raw_list_result)
 
         delete_tasks = []
-        for memory in memories[0]:
+        for memory in memories:
             delete_tasks.append(self._delete_memory(memory.id))
 
         await asyncio.gather(*delete_tasks)
 
-        logger.info(f"Deleted {len(memories[0])} memories")
+        logger.info(f"Deleted {len(memories)} memories")
 
         return {"message": "Memories deleted successfully!"}
 

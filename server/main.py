@@ -471,9 +471,37 @@ def _serialize_memory(row: Any) -> Dict[str, Any]:
     }
 
 
+def _flatten_vector_store_list_result(result: Any) -> list:
+    """Adapter for vector_store.list() returns.
+
+    Vector-store backends differ on the return shape. Today we may receive:
+      - ``{"results": [...], "count": N}`` (new dict shape, pgvector after V3)
+      - ``{"results": [[OutputData, ...]], "count": N}`` (pgvector wraps once
+        more to preserve legacy ``[0]`` indexing)
+      - ``[[OutputData, ...]]`` (legacy nested list)
+      - ``(rows, ...)`` (legacy tuple, e.g. some test mocks)
+      - ``[OutputData, ...]`` (legacy flat list)
+
+    Returns a flat list of ``OutputData`` rows in every case.
+
+    Used by ``_list_all_memories`` and ``routers.entities._iter_payloads`` so
+    we don't maintain two parallel copies of the shape-sniffing logic.
+    """
+    if isinstance(result, dict) and "results" in result:
+        rows = result["results"]
+        if isinstance(rows, list) and rows and isinstance(rows[0], list):
+            return rows[0]
+        return rows or []
+    if isinstance(result, tuple) and result:
+        result = result[0]
+    if isinstance(result, list) and result and isinstance(result[0], list):
+        return result[0]
+    return result or []
+
+
 def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
     results = get_memory_instance().vector_store.list(top_k=limit)
-    rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
+    rows = _flatten_vector_store_list_result(results)
     return {"results": [_serialize_memory(row) for row in rows]}
 
 
