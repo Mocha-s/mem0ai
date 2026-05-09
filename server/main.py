@@ -3,6 +3,7 @@ import logging
 import os
 import time
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlencode
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -497,6 +498,48 @@ def _flatten_vector_store_list_result(result: Any) -> list:
     if isinstance(result, list) and result and isinstance(result[0], list):
         return result[0]
     return result or []
+
+
+_ENTITY_KEYS = ("user_id", "agent_id", "run_id", "app_id")
+
+
+def _has_entity_scope_top_level(req: "MemoryCreate") -> bool:
+    """True iff the create request carries at least one entity ID at the top level."""
+    return any(getattr(req, k, None) for k in _ENTITY_KEYS)
+
+
+def _require_entity_scope(filters: Dict[str, Any]) -> None:
+    """Raise 400 unless ``filters`` contains at least one positively-scoped
+    entity ID. Mirrors mem0/memory/main.py:_filter_has_entity_scope but
+    surfaces an HTTP 400 with a clear message instead of a 500."""
+
+    def _walk(node: Any) -> bool:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in _ENTITY_KEYS and v not in (None, "", []):
+                    return True
+                if k in ("AND", "OR") and isinstance(v, list):
+                    if any(_walk(x) for x in v):
+                        return True
+        elif isinstance(node, list):
+            return any(_walk(x) for x in node)
+        return False
+
+    if not filters or not _walk(filters):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "filters must contain at least one of: user_id, agent_id, run_id, app_id. "
+                "Example: filters={'user_id': 'u1'}"
+            ),
+        )
+
+
+def _build_page_url(request: Request, page: int, page_size: int) -> str:
+    """Absolute URL for the given page using the current request's host + path."""
+    base = str(request.base_url).rstrip("/")
+    qs = urlencode({"page": page, "page_size": page_size})
+    return f"{base}{request.url.path}?{qs}"
 
 
 def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
