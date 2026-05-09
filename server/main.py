@@ -503,6 +503,18 @@ def _startup_sweep() -> None:
         logging.exception("Startup events sweep failed; continuing boot anyway")
 
 
+@app.get("/v1/ping/", summary="Unauthenticated health probe", include_in_schema=False)
+def ping():
+    """Lightweight health-check endpoint for external monitors.
+
+    Intentionally unauthenticated and free of DB / LLM calls so it can be
+    polled at high frequency by uptime monitors and load balancers without
+    holding an API key. Returns a small JSON document identifying the
+    service and major version.
+    """
+    return {"status": "ok", "service": "mem0-oss", "version": "v3"}
+
+
 @app.get("/v1/event/{event_id}/", summary="Poll the status of an async memory event")
 def get_event(event_id: uuid.UUID, _auth=Depends(verify_auth)):
     """Read-side counterpart to ``POST /v3/memories/add/``.
