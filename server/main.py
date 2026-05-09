@@ -525,6 +525,43 @@ def get_event(event_id: uuid.UUID, _auth=Depends(verify_auth)):
         }
 
 
+@app.get("/v1/events/", summary="List async memory events")
+def list_events(
+    status: Optional[str] = Query(None, pattern="^(PENDING|SUCCEEDED|FAILED)$"),
+    limit: int = Query(50, ge=1, le=200),
+    user_id: Optional[str] = Query(None),
+    _auth=Depends(verify_auth),
+):
+    """List events newest-first. Used by clients that poll multiple events
+    (e.g. the openclaw plugin's ``listEvents()``). Returns a
+    ``{"results": [...]}`` envelope matching the V3 list shape.
+    """
+    with SessionLocal() as s:
+        stmt = select(Event).order_by(Event.created_at.desc())
+        if status:
+            stmt = stmt.where(Event.status == status)
+        if user_id:
+            # ``payload`` is JSON (JSONB on Postgres, JSON on SQLite via
+            # JSON.with_variant). ``[].as_string()`` produces ``->>`` on PG and
+            # ``json_extract`` on SQLite, both of which compare to a string.
+            stmt = stmt.where(Event.payload["user_id"].as_string() == user_id)
+        stmt = stmt.limit(limit)
+        events = s.execute(stmt).scalars().all()
+        return {
+            "results": [
+                {
+                    "event_id": str(ev.id),
+                    "status": ev.status,
+                    "result": ev.result,
+                    "error": ev.error,
+                    "created_at": ev.created_at,
+                    "updated_at": ev.updated_at,
+                }
+                for ev in events
+            ]
+        }
+
+
 ALL_MEMORIES_LIMIT = 1000
 _RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "app_id", "hash", "created_at", "updated_at"}
 
