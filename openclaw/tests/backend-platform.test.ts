@@ -141,7 +141,7 @@ describe("PlatformBackend", () => {
     expect(backend).toBeInstanceOf(PlatformBackend);
   });
 
-  it("strips trailing slashes from baseUrl", () => {
+  it("strips trailing slashes from baseUrl", async () => {
     const backend = new PlatformBackend({
       apiKey: API_KEY,
       baseUrl: "https://api.mem0.ai///",
@@ -149,9 +149,8 @@ describe("PlatformBackend", () => {
     // We can verify by calling status and checking the base_url in the response
     const mock = mockFetchResponse(200, { status: "ok" });
     vi.stubGlobal("fetch", mock);
-    return backend.status().then((result) => {
-      expect(result.base_url).toBe("https://api.mem0.ai");
-    });
+    const result = await backend.status();
+    expect(result.base_url).toBe("https://api.mem0.ai");
   });
 
   // -- add() ---------------------------------------------------------------
