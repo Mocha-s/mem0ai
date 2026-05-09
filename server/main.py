@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlencode
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -224,13 +224,10 @@ class MemoryUpdate(BaseModel):
 
 
 class ListBody(BaseModel):
-    """Body for `POST /memories/list` — v2 filter dict + pagination."""
+    """Body for ``POST /v3/memories/`` — V3 filter dict (entity ID required)."""
     filters: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="v2 filter dict (AND/OR/NOT, eq/ne/in/nin/gt/gte/lt/lte/contains/icontains, '*'). "
-        "Empty means list all (admin operation, may be capped by top_k).",
+        ..., description="V2 filter dict; must include at least one of user_id/agent_id/run_id/app_id.",
     )
-    top_k: Optional[int] = Field(None, description="Maximum number of results to return.")
 
 
 class SearchBody(BaseModel):
@@ -631,25 +628,42 @@ def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
     return {"results": [_serialize_memory(row) for row in rows]}
 
 
-@app.post("/memories/list", summary="List memories with v2 filters")
-def list_memories(body: ListBody, _auth=Depends(verify_auth)):
-    """
-    List memories matching a v2 filter dict.
-
-    Empty filters list everything (capped by `top_k`, defaulting to 1000) — useful
-    for admin workflows. For scoped queries, pass an entity-id filter or wildcards
-    (e.g. ``{"user_id": "*"}`` to list across all users).
-    """
+@app.post("/v3/memories/", summary="List memories with V3 paginated envelope")
+def list_memories_v3(
+    body: ListBody,
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=200),
+    _auth=Depends(verify_auth),
+):
+    """Paginated list. Returns ``{count, next, previous, results}``."""
+    _require_entity_scope(body.filters)
+    offset = (page - 1) * page_size
     try:
-        filters = body.filters or {}
-        limit = body.top_k or ALL_MEMORIES_LIMIT
-        if not filters:
-            return _list_all_memories(limit)
-        return get_memory_instance().get_all(filters=filters, top_k=limit)
+        page_data = get_memory_instance().get_all(
+            filters=body.filters,
+            top_k=page_size,
+            offset=offset,
+            count_total=True,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         raise upstream_error()
+
+    count = page_data.get("count")
+    results = page_data.get("results", [])
+
+    has_next = (
+        (count is not None and offset + len(results) < count)
+        or (count is None and len(results) == page_size)
+    )
+    return {
+        "count": count,
+        "next": _build_page_url(request, page + 1, page_size) if has_next else None,
+        "previous": _build_page_url(request, page - 1, page_size) if page > 1 else None,
+        "results": results,
+    }
 
 
 @app.get("/memories/{memory_id}", summary="Get a memory")
