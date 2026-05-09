@@ -2,13 +2,14 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlencode
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -25,7 +26,7 @@ from errors import (
 )
 from rate_limit import limiter
 from db import SessionLocal
-from models import RequestLog, User
+from models import Event, RequestLog, User
 import telemetry
 from routers import auth as auth_router
 from routers import api_keys as api_keys_router
@@ -435,21 +436,56 @@ def generate_instructions(req: GenerateInstructionsRequest, _auth=Depends(verify
         raise upstream_error()
 
 
-@app.post("/memories", summary="Create memories")
-def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
-    """Store new memories."""
-    if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id, memory_create.app_id]):
+@app.post("/v3/memories/add/", summary="Add memories (async, returns event_id)")
+def add_memory_v3(
+    memory_create: MemoryCreate,
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_auth),
+):
+    """Queue a memory add for background extraction. Returns ``event_id``
+    that clients poll via ``GET /v1/event/{event_id}/`` until status is
+    SUCCEEDED or FAILED."""
+    if not _has_entity_scope_top_level(memory_create):
         raise HTTPException(
             status_code=400,
             detail="At least one identifier (user_id, agent_id, run_id, app_id) is required.",
         )
 
-    params = {k: v for k, v in memory_create.model_dump().items() if v is not None and k != "messages"}
-    try:
-        response = get_memory_instance().add(messages=[m.model_dump() for m in memory_create.messages], **params)
-        return JSONResponse(content=response)
-    except Exception:
-        raise upstream_error()
+    payload = memory_create.model_dump(exclude_none=True)
+    with SessionLocal() as s:
+        ev = Event(status="PENDING", payload=payload)
+        s.add(ev)
+        s.commit()
+        s.refresh(ev)
+        event_id = ev.id
+
+    background_tasks.add_task(_run_add_event, event_id)
+    return {
+        "message": "Memory processing has been queued for background execution",
+        "status": "PENDING",
+        "event_id": str(event_id),
+    }
+
+
+def _run_add_event(event_id: uuid.UUID) -> None:
+    """Background worker. Runs after the HTTP response is sent. Owns its own
+    DB session because the request session is already closed."""
+    with SessionLocal() as s:
+        ev = s.get(Event, event_id)
+        if ev is None or ev.status != "PENDING":
+            return
+        try:
+            payload = dict(ev.payload)            # don't mutate the JSON column
+            messages = payload.pop("messages", [])
+            result = get_memory_instance().add(messages=messages, **payload)
+            ev.result = result
+            ev.status = "SUCCEEDED"
+        except Exception as exc:
+            logging.exception("V3 add background task failed for event %s", event_id)
+            ev.error = str(exc)
+            ev.status = "FAILED"
+        finally:
+            s.commit()
 
 
 ALL_MEMORIES_LIMIT = 1000
