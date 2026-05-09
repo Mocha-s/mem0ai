@@ -74,3 +74,43 @@ def test_event_status_transition_to_succeeded(db):
             assert ev.result["results"][0]["event"] == "ADD"
     finally:
         sys.path.remove(str(SERVER_DIR))
+
+
+def test_startup_sweep_marks_stale_pending_failed(db, monkeypatch):
+    sys.path.insert(0, str(SERVER_DIR))
+    try:
+        from datetime import datetime, timedelta, timezone
+        from models import Event
+
+        Session = sessionmaker(bind=db)
+        with Session() as s:
+            ev = Event(
+                status="PENDING",
+                payload={"messages": []},
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+            )
+            s.add(ev); s.commit()
+            stale_id = ev.id
+
+        env = {
+            "OPENAI_API_KEY": "fake-key",
+            "AUTH_DISABLED": "true",
+            "JWT_SECRET": "test-secret-test-secret-test-secret",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            import importlib
+            import db as server_db
+            server_db.engine = db
+            server_db.SessionLocal = Session
+            with patch("mem0.Memory.from_config", return_value=MagicMock()):
+                import main as server_main
+                importlib.reload(server_main)
+                server_main.set_session_factory(Session)
+                server_main._sweep_stale_events()
+
+        with Session() as s:
+            ev2 = s.get(Event, stale_id)
+            assert ev2.status == "FAILED"
+            assert "restarted" in (ev2.error or "")
+    finally:
+        sys.path.remove(str(SERVER_DIR))

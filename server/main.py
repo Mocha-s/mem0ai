@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlencode
 
@@ -486,6 +487,30 @@ def _run_add_event(event_id: uuid.UUID) -> None:
             ev.status = "FAILED"
         finally:
             s.commit()
+
+
+def _sweep_stale_events() -> None:
+    """Mark PENDING events older than 5 minutes as FAILED. Runs once at
+    boot to recover from process crashes mid-task."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with SessionLocal() as s:
+        stale = s.execute(
+            select(Event).where(Event.status == "PENDING", Event.created_at < cutoff)
+        ).scalars().all()
+        for ev in stale:
+            ev.status = "FAILED"
+            ev.error = "server restarted before completion"
+        if stale:
+            logging.warning("Marked %d stale PENDING events as FAILED", len(stale))
+        s.commit()
+
+
+@app.on_event("startup")
+def _startup_sweep() -> None:
+    try:
+        _sweep_stale_events()
+    except Exception:
+        logging.exception("Startup events sweep failed; continuing boot anyway")
 
 
 @app.get("/v1/event/{event_id}/", summary="Poll the status of an async memory event")
