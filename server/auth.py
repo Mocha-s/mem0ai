@@ -142,23 +142,78 @@ def _resolve_user_from_api_key(key: str, db: Session) -> User:
     raise HTTPException(status_code=401, detail="Invalid API key.")
 
 
+def _resolve_via_api_key(request: Request, key: str, db: Session) -> User | None:
+    """Resolve ``key`` against ADMIN_API_KEY first, then the per-user APIKey table.
+
+    Marks ``request.state.auth_type`` (``admin_api_key`` for the legacy admin
+    shortcut, ``api_key`` for a per-user key) and returns the User — ``None``
+    for the admin path, matching the contract ``require_auth`` already relies
+    on for the default-user fallback in single-tenant deployments.
+    """
+    if ADMIN_API_KEY and secrets.compare_digest(key, ADMIN_API_KEY):
+        _mark_auth_type(request, "admin_api_key")
+        return None
+    _mark_auth_type(request, "api_key")
+    return _resolve_user_from_api_key(key, db)
+
+
 async def verify_auth(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     x_api_key: str | None = Depends(api_key_header),
     db: Session = Depends(get_db),
 ) -> User | None:
-    """Authenticate via JWT, X-API-Key, or legacy ADMIN_API_KEY. Returns User or None."""
+    """Authenticate a request and resolve the calling User.
+
+    Resolution order:
+      1. ``Authorization: Token <key>``  → API-key path. Matches the mem0
+         hosted-platform convention (and what the OpenClaw plugin sends).
+         ``HTTPBearer`` only parses the ``Bearer`` scheme per RFC 6750, so
+         we read the ``Authorization`` header directly to catch ``Token``.
+      2. ``Authorization: Bearer <val>`` → try JWT decode first; on
+         ``JWTError`` fall back to the API-key path. Lets clients that
+         accidentally send their API key in the Bearer slot still work
+         (a common mistake from SDKs that assume Bearer is universal).
+      3. ``X-API-Key: <key>``            → API-key path. Unchanged.
+      4. ``AUTH_DISABLED=true``          → no-op pass-through (dev only).
+
+    Returns the resolved ``User`` or ``None`` for admin/disabled paths;
+    ``require_auth`` translates ``None`` into the default user for legacy
+    single-tenant deployments.
+    """
+    # Authorization: Token <key>  — HTTPBearer ignores non-Bearer schemes
+    # (auto_error=False, returns None), so parse the header ourselves.
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header:
+        scheme, _, value = auth_header.partition(" ")
+        if scheme.lower() == "token" and value:
+            return _resolve_via_api_key(request, value, db)
+
+    # Authorization: Bearer <val>  — JWT first, fall back to API key on JWTError.
     if credentials is not None:
+        token = credentials.credentials
+        try:
+            payload = jwt.decode(token, _get_secret(), algorithms=[JWT_ALGORITHM])
+        except JWTError:
+            # Not a JWT — treat the Bearer payload as an API key.
+            return _resolve_via_api_key(request, token, db)
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type.")
+        sub = payload.get("sub")
+        # ``users.id`` is a UUID column. PostgreSQL accepts string PKs in
+        # ``Session.get``; SQLite (used by tests) does not, so coerce here.
+        try:
+            user_pk = uuid.UUID(sub) if isinstance(sub, str) else sub
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=401, detail="User not found.")
+        user = db.get(User, user_pk)
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found.")
         _mark_auth_type(request, "bearer")
-        return _resolve_user_from_jwt(credentials.credentials, db)
+        return user
 
     if x_api_key is not None:
-        if ADMIN_API_KEY and secrets.compare_digest(x_api_key, ADMIN_API_KEY):
-            _mark_auth_type(request, "admin_api_key")
-            return None
-        _mark_auth_type(request, "api_key")
-        return _resolve_user_from_api_key(x_api_key, db)
+        return _resolve_via_api_key(request, x_api_key, db)
 
     if AUTH_DISABLED:
         _mark_auth_type(request, "disabled")

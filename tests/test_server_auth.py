@@ -17,6 +17,7 @@ import importlib
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -407,6 +408,112 @@ class TestAuthEnabled:
 
     def test_configure_with_key(self):
         resp = self._authed("POST", "/configure", json={"version": "v1.1"})
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Authorization header schemes — Token + Bearer-as-api-key
+# ---------------------------------------------------------------------------
+
+class TestAuthorizationHeaderSchemes:
+    """The OSS server must accept three credential transports for an API key:
+
+      * ``X-API-Key: <key>``                — historical OSS header.
+      * ``Authorization: Token <key>``      — mem0 hosted-platform convention,
+        also used by the OpenClaw plugin.
+      * ``Authorization: Bearer <key>``     — common SDK mistake (clients that
+        assume Bearer is universal). Falls back to API key only if JWT decode
+        raises ``JWTError``; valid JWTs continue to authenticate as JWTs.
+    """
+
+    API_KEY = "admin-scheme-test-key-789"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, sqlite_db, _mock_memory):
+        self.app = _load_app_with_db({"ADMIN_API_KEY": self.API_KEY}, *sqlite_db)
+        self.client = TestClient(self.app)
+        self.mock = _mock_memory
+        self.sqlite_url, self.engine = sqlite_db
+
+    # --- Authorization: Token <key> ---
+
+    def test_authorization_token_with_admin_key_succeeds(self):
+        resp = self.client.get(
+            "/v3/memories/mem-1/",
+            headers={"Authorization": f"Token {self.API_KEY}"},
+        )
+        assert resp.status_code == 200
+
+    def test_authorization_token_lowercase_scheme_succeeds(self):
+        """Scheme matching is case-insensitive (per RFC 7235)."""
+        resp = self.client.get(
+            "/v3/memories/mem-1/",
+            headers={"Authorization": f"token {self.API_KEY}"},
+        )
+        assert resp.status_code == 200
+
+    def test_authorization_token_with_invalid_key_returns_401(self):
+        resp = self.client.get(
+            "/v3/memories/mem-1/",
+            headers={"Authorization": "Token not-a-real-key"},
+        )
+        assert resp.status_code == 401
+
+    def test_authorization_token_empty_value_falls_through_to_401(self):
+        resp = self.client.get("/v3/memories/mem-1/", headers={"Authorization": "Token "})
+        assert resp.status_code == 401
+
+    # --- Authorization: Bearer <api-key>  (JWT decode fails → fallback) ---
+
+    def test_authorization_bearer_with_admin_key_falls_back_to_api_key(self):
+        """A non-JWT in the Bearer slot should be accepted as an API key."""
+        resp = self.client.get(
+            "/v3/memories/mem-1/",
+            headers={"Authorization": f"Bearer {self.API_KEY}"},
+        )
+        assert resp.status_code == 200
+
+    def test_authorization_bearer_with_invalid_string_returns_401(self):
+        """Neither a valid JWT nor a known API key — must reject."""
+        resp = self.client.get(
+            "/v3/memories/mem-1/",
+            headers={"Authorization": "Bearer total-garbage-not-a-jwt-not-a-key"},
+        )
+        assert resp.status_code == 401
+
+    # --- Authorization: Bearer <jwt>  (existing JWT path still works) ---
+
+    def test_authorization_bearer_with_valid_jwt_succeeds(self):
+        """Mint a JWT against the same secret the app uses, seed a matching
+        User row, and verify the Bearer path still resolves it as a JWT
+        (not as an API key)."""
+        sys.path.insert(0, str(SERVER_DIR))
+        try:
+            import auth as server_auth
+            from models import User
+            # Insert via the ORM so the SQLAlchemy Uuid type handles the
+            # SQLite-vs-Postgres storage conversion (SQLite stores UUIDs as
+            # 32-char hex without hyphens; raw SQL with a hyphenated string
+            # would silently miss the SELECT in db.get).
+            user_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+            SessionLocalSqlite = sessionmaker(bind=self.engine, autoflush=False, expire_on_commit=False)
+            with SessionLocalSqlite() as session:
+                session.add(User(
+                    id=user_id,
+                    name="JWT User",
+                    email="jwt-user@example.com",
+                    password_hash="x",
+                    role="admin",
+                ))
+                session.commit()
+            jwt_token = server_auth.create_access_token(str(user_id), "admin")
+        finally:
+            sys.path.remove(str(SERVER_DIR))
+
+        resp = self.client.get(
+            "/v3/memories/mem-1/",
+            headers={"Authorization": f"Bearer {jwt_token}"},
+        )
         assert resp.status_code == 200
 
 
