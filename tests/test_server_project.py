@@ -209,7 +209,7 @@ class TestConfigureRejectsProjectFields:
 
 
 # ---------------------------------------------------------------------------
-# /memories/search forwards use_criteria + criteria
+# /v3/memories/search/ forwards use_criteria + criteria
 # ---------------------------------------------------------------------------
 
 
@@ -217,7 +217,7 @@ class TestSearchForwardsCriteriaFlags:
     def test_use_criteria_passed_through(self, client):
         c, mock, _ = client
         c.post(
-            "/memories/search",
+            "/v3/memories/search/",
             json={
                 "query": "joy?",
                 "filters": {"user_id": "alice"},
@@ -230,7 +230,7 @@ class TestSearchForwardsCriteriaFlags:
         c, mock, _ = client
         criteria = [{"name": "joy", "description": "positive", "weight": 3}]
         c.post(
-            "/memories/search",
+            "/v3/memories/search/",
             json={
                 "query": "joy?",
                 "filters": {"user_id": "alice"},
@@ -239,9 +239,12 @@ class TestSearchForwardsCriteriaFlags:
         )
         assert mock.search.call_args.kwargs["criteria"] == criteria
 
-    def test_unset_criteria_flags_not_forwarded(self, client):
+    def test_unset_criteria_flags_default_to_none(self, client):
+        """V3 search always forwards every kwarg from its SearchBody schema;
+        unset ``use_criteria`` / ``criteria`` arrive as ``None`` rather than
+        being dropped from the call entirely."""
         c, mock, _ = client
-        c.post("/memories/search", json={"query": "x", "filters": {"user_id": "alice"}})
+        c.post("/v3/memories/search/", json={"query": "x", "filters": {"user_id": "alice"}})
         kwargs = mock.search.call_args.kwargs
-        assert "use_criteria" not in kwargs
-        assert "criteria" not in kwargs
+        assert kwargs["use_criteria"] is None
+        assert kwargs["criteria"] is None
