@@ -147,3 +147,54 @@ class TestSearchDefaults:
         assert kw["rerank"] is True
         assert kw["use_criteria"] is True
         assert kw["criteria"][0]["name"] == "joy"
+
+
+# ---------------------------------------------------------------------------
+# GET/PUT/DELETE /v3/memories/{memory_id}/, POST /v3/memories/delete/,
+# GET /v3/memories/{memory_id}/history/, POST /v3/memories/{memory_id}/feedback/
+# ---------------------------------------------------------------------------
+
+
+class TestV3MemoryCRUD:
+    def test_get_memory_by_id(self, client):
+        c, fake_memory, _ = client
+        fake_memory.get.return_value = {"id": "mem-1", "memory": "x"}
+        resp = c.get("/v3/memories/mem-1/")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "mem-1"
+
+    def test_put_updates_memory(self, client):
+        c, fake_memory, _ = client
+        fake_memory.update.return_value = {"id": "mem-1", "memory": "y"}
+        resp = c.put("/v3/memories/mem-1/", json={"text": "y"})
+        assert resp.status_code == 200
+        kw = fake_memory.update.call_args.kwargs
+        assert kw["data"] == "y"
+
+    def test_delete_memory(self, client):
+        c, fake_memory, _ = client
+        resp = c.delete("/v3/memories/mem-1/")
+        assert resp.status_code == 200
+
+    def test_history_endpoint(self, client):
+        c, fake_memory, _ = client
+        fake_memory.history.return_value = []
+        resp = c.get("/v3/memories/mem-1/history/")
+        assert resp.status_code == 200
+
+    def test_feedback_endpoint(self, client):
+        c, _, _ = client
+        resp = c.post("/v3/memories/mem-1/feedback/", json={
+            "feedback": "POSITIVE", "feedback_reason": "useful"
+        })
+        assert resp.status_code == 200
+
+    def test_bulk_delete_requires_filters(self, client):
+        c, _, _ = client
+        resp = c.post("/v3/memories/delete/", json={"filters": {}})
+        assert resp.status_code == 400
+
+    def test_bulk_delete_with_filters(self, client):
+        c, fake_memory, _ = client
+        resp = c.post("/v3/memories/delete/", json={"filters": {"user_id": "alice"}})
+        assert resp.status_code == 200

@@ -659,7 +659,7 @@ def list_memories_v3(
     }
 
 
-@app.get("/memories/{memory_id}", summary="Get a memory")
+@app.get("/v3/memories/{memory_id}/", summary="Get a memory")
 def get_memory(memory_id: str, _auth=Depends(verify_auth)):
     """Retrieve a specific memory by ID."""
     try:
@@ -689,7 +689,7 @@ def search_memories_v3(body: SearchBody, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
-@app.put("/memories/{memory_id}", summary="Update a memory")
+@app.put("/v3/memories/{memory_id}/", summary="Update a memory")
 def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(verify_auth)):
     """Update an existing memory."""
     try:
@@ -700,7 +700,7 @@ def update_memory(memory_id: str, updated_memory: MemoryUpdate, _auth=Depends(ve
         raise upstream_error()
 
 
-@app.get("/memories/{memory_id}/history", summary="Get memory history")
+@app.get("/v3/memories/{memory_id}/history/", summary="Get memory history")
 def memory_history(memory_id: str, _auth=Depends(verify_auth)):
     """Retrieve memory history."""
     try:
@@ -710,7 +710,7 @@ def memory_history(memory_id: str, _auth=Depends(verify_auth)):
 
 
 @app.post(
-    "/memories/{memory_id}/feedback",
+    "/v3/memories/{memory_id}/feedback/",
     summary="Record feedback on a memory",
     response_model=MessageResponse,
 )
@@ -737,7 +737,7 @@ def memory_feedback(memory_id: str, body: FeedbackBody, _auth=Depends(verify_aut
         raise upstream_error()
 
 
-@app.delete("/memories/{memory_id}", summary="Delete a memory", response_model=MessageResponse)
+@app.delete("/v3/memories/{memory_id}/", summary="Delete a memory", response_model=MessageResponse)
 def delete_memory(memory_id: str, _auth=Depends(verify_auth)):
     """Delete a specific memory by ID."""
     try:
@@ -747,18 +747,14 @@ def delete_memory(memory_id: str, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
-@app.post("/memories/delete", summary="Delete memories matching v2 filters", response_model=MessageResponse)
+@app.post("/v3/memories/delete/", summary="Delete memories matching V3 filters", response_model=MessageResponse)
 def delete_memories_by_filter(body: DeleteBody, _auth=Depends(verify_auth)):
     """Delete all memories matching a v2 filter dict.
 
     The filter must scope the operation — an empty filter is rejected to
     prevent accidental project-wide wipes (use ``POST /reset`` for that).
     """
-    if not body.filters:
-        raise HTTPException(
-            status_code=400,
-            detail="filters are required. Use POST /reset to wipe everything.",
-        )
+    _require_entity_scope(body.filters)
     try:
         get_memory_instance().delete_all(filters=body.filters)
         return MessageResponse(message="All relevant memories deleted")
