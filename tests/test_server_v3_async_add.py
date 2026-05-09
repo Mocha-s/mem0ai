@@ -161,3 +161,26 @@ class TestV3Add:
                 assert "LLM exploded" in (ev.error or "")
         finally:
             sys.path.remove(str(SERVER_DIR))
+
+
+class TestEventPoll:
+    def test_poll_returns_event_state(self, client):
+        c, _, _ = client
+        post = c.post("/v3/memories/add/", json={
+            "messages": [{"role": "user", "content": "x"}],
+            "user_id": "alice",
+        })
+        event_id = post.json()["event_id"]
+
+        resp = c.get(f"/v1/event/{event_id}/")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["event_id"] == event_id
+        assert body["status"] == "SUCCEEDED"
+        assert body["result"] == {"results": [{"id": "mem-1", "event": "ADD", "memory": "x"}]}
+        assert body["error"] is None
+
+    def test_poll_unknown_event_returns_404(self, client):
+        c, _, _ = client
+        resp = c.get("/v1/event/00000000-0000-0000-0000-000000000000/")
+        assert resp.status_code == 404

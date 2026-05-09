@@ -488,6 +488,28 @@ def _run_add_event(event_id: uuid.UUID) -> None:
             s.commit()
 
 
+@app.get("/v1/event/{event_id}/", summary="Poll the status of an async memory event")
+def get_event(event_id: uuid.UUID, _auth=Depends(verify_auth)):
+    """Read-side counterpart to ``POST /v3/memories/add/``.
+
+    Returns the event row's current ``status`` (PENDING / SUCCEEDED / FAILED),
+    plus ``result`` (populated on success) and ``error`` (populated on
+    failure). Mirrors the platform's event polling shape.
+    """
+    with SessionLocal() as s:
+        ev = s.get(Event, event_id)
+        if ev is None:
+            raise HTTPException(status_code=404, detail="event not found")
+        return {
+            "event_id": str(ev.id),
+            "status": ev.status,
+            "result": ev.result,
+            "error": ev.error,
+            "created_at": ev.created_at,
+            "updated_at": ev.updated_at,
+        }
+
+
 ALL_MEMORIES_LIMIT = 1000
 _RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "app_id", "hash", "created_at", "updated_at"}
 
