@@ -84,9 +84,10 @@ services:
     depends_on:
       mem0:
         condition: service_healthy
-    # healthcheck currently failing — see /api/health route in dashboard/
+    # /api/health route exists in src/app/api/health/route.ts; using 127.0.0.1
+    # so busybox wget doesn't resolve `localhost` to ::1 (Next.js binds IPv4 only).
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 10s
       timeout: 5s
       start_period: 30s
