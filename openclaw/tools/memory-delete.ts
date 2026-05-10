@@ -1,9 +1,17 @@
 import { Type } from "@sinclair/typebox";
+import type { SearchOptions as BackendSearchOptions } from "../backend/base.ts";
 import { isSubagentSession } from "../isolation.ts";
 import type { ToolDeps } from "./index.ts";
 
+interface BackendMemoryResult {
+  id?: string;
+  memory?: string;
+  score?: number;
+  [key: string]: unknown;
+}
+
 export function createMemoryDeleteTool(deps: ToolDeps) {
-  const { api, provider, resolveUserId, getCurrentSessionId, buildSearchOptions } = deps;
+  const { api, backend, resolveUserId, getCurrentSessionId, buildSearchOptions } = deps;
 
   return {
     name: "memory_delete",
@@ -31,24 +39,32 @@ export function createMemoryDeleteTool(deps: ToolDeps) {
         }
 
         if (memoryId) {
-          await provider.delete(memoryId);
+          await backend.delete(memoryId);
           deps.captureToolEvent("memory_delete", { success: true, latency_ms: Date.now() - start, delete_mode: "single" });
           return { content: [{ type: "text", text: `Memory ${memoryId} deleted.` }], details: { action: "deleted", id: memoryId } };
         }
 
         if (query) {
           const uid = resolveUserId({ agentId, userId });
-          const results = await provider.search(query, buildSearchOptions(uid, 5));
+          const provOpts = buildSearchOptions(uid, 5);
+          const searchOpts: BackendSearchOptions = {
+            userId: provOpts.user_id,
+            topK: provOpts.top_k,
+            threshold: provOpts.threshold,
+          };
+          if (provOpts.run_id) searchOpts.runId = provOpts.run_id;
+          const results = (await backend.search(query, searchOpts)) as BackendMemoryResult[];
           if (!results || results.length === 0) {
             return { content: [{ type: "text", text: "No matching memories found." }], details: { found: 0 } };
           }
           if (results.length === 1 || (results[0].score ?? 0) > 0.9) {
-            await provider.delete(results[0].id);
-            return { content: [{ type: "text", text: `Deleted: "${results[0].memory}"` }], details: { action: "deleted", id: results[0].id } };
+            await backend.delete(results[0].id as string);
+            return { content: [{ type: "text", text: `Deleted: "${results[0].memory ?? ""}"` }], details: { action: "deleted", id: results[0].id } };
           }
-          const list = results.map((r) =>
-            `- [${r.id}] ${r.memory.slice(0, 80)}${r.memory.length > 80 ? "..." : ""} (${((r.score ?? 0) * 100).toFixed(0)}%)`
-          ).join("\n");
+          const list = results.map((r) => {
+            const mem = r.memory ?? "";
+            return `- [${r.id ?? ""}] ${mem.slice(0, 80)}${mem.length > 80 ? "..." : ""} (${((r.score ?? 0) * 100).toFixed(0)}%)`;
+          }).join("\n");
           return {
             content: [{ type: "text", text: `Found ${results.length} candidates. Specify memoryId:\n${list}` }],
             details: { action: "candidates", candidates: results.map((r) => ({ id: r.id, memory: r.memory, score: r.score })) },
@@ -60,7 +76,7 @@ export function createMemoryDeleteTool(deps: ToolDeps) {
             return { content: [{ type: "text", text: "Bulk deletion requires confirm: true." }], details: { error: "confirmation_required" } };
           }
           const uid = resolveUserId({ agentId, userId });
-          await provider.deleteAll(uid);
+          await backend.delete(undefined, { all: true, userId: uid, ...(agentId && { agentId }) });
           deps.captureToolEvent("memory_delete", { success: true, latency_ms: Date.now() - start, delete_mode: "all" });
           api.logger.info(`openclaw-mem0: deleted all memories for user ${uid}`);
           return { content: [{ type: "text", text: `All memories deleted for user "${uid}".` }], details: { action: "deleted_all", user_id: uid } };

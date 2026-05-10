@@ -1,9 +1,19 @@
 import { Type } from "@sinclair/typebox";
-import type { MemoryItem, SearchOptions } from "../types.ts";
+import type { SearchOptions as BackendSearchOptions } from "../backend/base.ts";
 import type { ToolDeps } from "./index.ts";
 
+interface BackendMemoryResult {
+  id?: string;
+  memory?: string;
+  score?: number;
+  categories?: string[];
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
 export function createMemorySearchTool(deps: ToolDeps) {
-  const { cfg, provider, resolveUserId, buildSearchOptions, getCurrentSessionId } = deps;
+  const { cfg, backend, resolveUserId, buildSearchOptions, getCurrentSessionId } = deps;
 
   return {
     name: "memory_search",
@@ -35,11 +45,18 @@ export function createMemorySearchTool(deps: ToolDeps) {
 
       const start = Date.now();
       try {
-        let results: MemoryItem[] = [];
+        let results: BackendMemoryResult[] = [];
         const uid = resolveUserId({ agentId, userId });
         const currentSessionId = getCurrentSessionId();
 
-        const applyFilters = (opts: SearchOptions): SearchOptions => {
+        const toBackendOpts = (sessionKey?: string): BackendSearchOptions => {
+          const provOpts = buildSearchOptions(uid, limit, undefined, sessionKey);
+          const opts: BackendSearchOptions = {
+            userId: provOpts.user_id,
+            topK: provOpts.top_k,
+            threshold: provOpts.threshold,
+          };
+          if (provOpts.run_id) opts.runId = provOpts.run_id;
           if (filterCategories?.length) opts.categories = filterCategories;
           if (agentFilters) opts.filters = agentFilters;
           return opts;
@@ -47,15 +64,15 @@ export function createMemorySearchTool(deps: ToolDeps) {
 
         if (scope === "session") {
           if (currentSessionId) {
-            results = await provider.search(query, applyFilters(buildSearchOptions(uid, limit, undefined, currentSessionId)));
+            results = (await backend.search(query, toBackendOpts(currentSessionId))) as BackendMemoryResult[];
           }
         } else if (scope === "long-term") {
-          results = await provider.search(query, applyFilters(buildSearchOptions(uid, limit)));
+          results = (await backend.search(query, toBackendOpts())) as BackendMemoryResult[];
         } else {
-          const longTerm = await provider.search(query, applyFilters(buildSearchOptions(uid, limit)));
-          let session: MemoryItem[] = [];
+          const longTerm = (await backend.search(query, toBackendOpts())) as BackendMemoryResult[];
+          let session: BackendMemoryResult[] = [];
           if (currentSessionId) {
-            session = await provider.search(query, applyFilters(buildSearchOptions(uid, limit, undefined, currentSessionId)));
+            session = (await backend.search(query, toBackendOpts(currentSessionId))) as BackendMemoryResult[];
           }
           const seen = new Set(longTerm.map((r) => r.id));
           results = [...longTerm, ...session.filter((r) => !seen.has(r.id))];
@@ -68,7 +85,7 @@ export function createMemorySearchTool(deps: ToolDeps) {
         }
 
         const text = results.map((r, i) =>
-          `${i + 1}. ${r.memory} (score: ${((r.score ?? 0) * 100).toFixed(0)}%, id: ${r.id})`
+          `${i + 1}. ${r.memory ?? ""} (score: ${((r.score ?? 0) * 100).toFixed(0)}%, id: ${r.id ?? ""})`
         ).join("\n");
 
         return {

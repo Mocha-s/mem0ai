@@ -2,7 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { ToolDeps } from "./index.ts";
 
 export function createMemoryGetTool(deps: ToolDeps) {
-  const { provider } = deps;
+  const { backend } = deps;
 
   return {
     name: "memory_get",
@@ -16,10 +16,12 @@ export function createMemoryGetTool(deps: ToolDeps) {
       const { memoryId } = params as { memoryId: string };
       const start = Date.now();
       try {
-        const memory = await provider.get(memoryId);
+        const memory = (await backend.get(memoryId)) as {
+          id?: string; memory?: string; created_at?: string; updated_at?: string;
+        };
         deps.captureToolEvent("memory_get", { success: true, latency_ms: Date.now() - start });
         return {
-          content: [{ type: "text", text: `Memory ${memory.id}:\n${memory.memory}\n\nCreated: ${memory.created_at ?? "unknown"}\nUpdated: ${memory.updated_at ?? "unknown"}` }],
+          content: [{ type: "text", text: `Memory ${memory.id ?? memoryId}:\n${memory.memory ?? ""}\n\nCreated: ${memory.created_at ?? "unknown"}\nUpdated: ${memory.updated_at ?? "unknown"}` }],
           details: { memory },
         };
       } catch (err) {

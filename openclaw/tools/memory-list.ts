@@ -1,9 +1,16 @@
 import { Type } from "@sinclair/typebox";
-import type { MemoryItem } from "../types.ts";
 import type { ToolDeps } from "./index.ts";
 
+interface BackendMemoryResult {
+  id?: string;
+  memory?: string;
+  categories?: string[];
+  created_at?: string;
+  [key: string]: unknown;
+}
+
 export function createMemoryListTool(deps: ToolDeps) {
-  const { provider, resolveUserId, getCurrentSessionId } = deps;
+  const { backend, resolveUserId, getCurrentSessionId } = deps;
 
   return {
     name: "memory_list",
@@ -26,18 +33,18 @@ export function createMemoryListTool(deps: ToolDeps) {
 
       const start = Date.now();
       try {
-        let memories: MemoryItem[] = [];
+        let memories: BackendMemoryResult[] = [];
         const uid = resolveUserId({ agentId, userId });
         const currentSessionId = getCurrentSessionId();
 
         if (scope === "session") {
-          if (currentSessionId) memories = await provider.getAll({ user_id: uid, run_id: currentSessionId, source: "OPENCLAW" });
+          if (currentSessionId) memories = (await backend.listMemories({ userId: uid, runId: currentSessionId })) as BackendMemoryResult[];
         } else if (scope === "long-term") {
-          memories = await provider.getAll({ user_id: uid, source: "OPENCLAW" });
+          memories = (await backend.listMemories({ userId: uid })) as BackendMemoryResult[];
         } else {
-          const longTerm = await provider.getAll({ user_id: uid, source: "OPENCLAW" });
-          let session: MemoryItem[] = [];
-          if (currentSessionId) session = await provider.getAll({ user_id: uid, run_id: currentSessionId, source: "OPENCLAW" });
+          const longTerm = (await backend.listMemories({ userId: uid })) as BackendMemoryResult[];
+          let session: BackendMemoryResult[] = [];
+          if (currentSessionId) session = (await backend.listMemories({ userId: uid, runId: currentSessionId })) as BackendMemoryResult[];
           const seen = new Set(longTerm.map((r) => r.id));
           memories = [...longTerm, ...session.filter((r) => !seen.has(r.id))];
         }
@@ -48,7 +55,7 @@ export function createMemoryListTool(deps: ToolDeps) {
           return { content: [{ type: "text", text: "No memories stored yet." }], details: { count: 0 } };
         }
 
-        const text = memories.map((r, i) => `${i + 1}. ${r.memory} (id: ${r.id})`).join("\n");
+        const text = memories.map((r, i) => `${i + 1}. ${r.memory ?? ""} (id: ${r.id ?? ""})`).join("\n");
         return {
           content: [{ type: "text", text: `${memories.length} memories:\n\n${text}` }],
           details: {

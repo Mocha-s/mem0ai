@@ -3,7 +3,7 @@ import { isSubagentSession } from "../isolation.ts";
 import type { ToolDeps } from "./index.ts";
 
 export function createMemoryUpdateTool(deps: ToolDeps) {
-  const { api, provider, getCurrentSessionId } = deps;
+  const { backend, getCurrentSessionId } = deps;
 
   return {
     name: "memory_update",
@@ -21,7 +21,7 @@ export function createMemoryUpdateTool(deps: ToolDeps) {
         if (isSubagentSession(getCurrentSessionId())) {
           return { content: [{ type: "text", text: "Memory update is not available in subagent sessions." }], details: { error: "subagent_blocked" } };
         }
-        await provider.update(memoryId, text);
+        await backend.update(memoryId, text);
         deps.captureToolEvent("memory_update", { success: true, latency_ms: Date.now() - start });
         return {
           content: [{ type: "text", text: `Updated memory ${memoryId}: "${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"` }],

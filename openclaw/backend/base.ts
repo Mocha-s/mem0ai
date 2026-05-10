@@ -12,6 +12,9 @@ export interface AddOptions {
   metadata?: Record<string, unknown>;
   infer?: boolean;
   categories?: string[];
+  deducedMemories?: string[];
+  customInstructions?: string;
+  customCategories?: Record<string, string>;
 }
 
 export interface SearchOptions {
@@ -24,6 +27,7 @@ export interface SearchOptions {
   rerank?: boolean;
   filters?: Record<string, unknown>;
   fields?: string[];
+  categories?: string[];
 }
 
 export interface ListOptions {

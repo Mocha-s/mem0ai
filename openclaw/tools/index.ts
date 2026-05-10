@@ -15,7 +15,7 @@ export interface ToolDeps {
   api: OpenClawPluginApi;
   provider: Mem0Provider;
   cfg: Mem0Config;
-  backend?: Backend;
+  backend: Backend;
   resolveUserId: (opts: { agentId?: string; userId?: string }) => string;
   effectiveUserId: (sessionKey?: string) => string;
   agentUserId: (id: string) => string;

@@ -1,12 +1,16 @@
 import { Type } from "@sinclair/typebox";
-import type { AddOptions } from "../types.ts";
+import type { AddOptions as BackendAddOptions } from "../backend/base.ts";
 import { isSubagentSession } from "../isolation.ts";
 import { isNoiseMessage, stripNoiseFromContent } from "../filtering.ts";
-// v3.0.0: resolveCategories/ttlToExpirationDate removed - expiration_date/immutable no longer supported
 import type { ToolDeps } from "./index.ts";
 
+interface BackendAddResult {
+  results?: Array<{ id?: string; memory?: string; event?: string }>;
+  [key: string]: unknown;
+}
+
 export function createMemoryAddTool(deps: ToolDeps) {
-  const { api, provider, resolveUserId, getCurrentSessionId, buildAddOptions, buildSearchOptions, skillsActive } = deps;
+  const { api, backend, cfg, resolveUserId, getCurrentSessionId, buildAddOptions, skillsActive } = deps;
 
   return {
     name: "memory_add",
@@ -34,7 +38,6 @@ export function createMemoryAddTool(deps: ToolDeps) {
         return { content: [{ type: "text", text: "No facts provided. Pass 'text' or 'facts' array." }], details: { error: "missing_facts" } };
       }
 
-      // Filter out noise and clean the facts before storing
       const allFacts = rawFacts
         .map((f) => stripNoiseFromContent(f))
         .filter((f) => f.length > 0 && !isNoiseMessage(f));
@@ -64,13 +67,15 @@ export function createMemoryAddTool(deps: ToolDeps) {
             ...(importance !== undefined && { importance }),
           };
 
-          const addOpts: AddOptions = {
-            user_id: uid, source: "OPENCLAW", infer: false,
-            deduced_memories: allFacts, metadata: parsedMetadata ?? {},
+          const addOpts: BackendAddOptions = {
+            userId: uid,
+            infer: false,
+            deducedMemories: allFacts,
+            metadata: parsedMetadata,
           };
-          if (runId) addOpts.run_id = runId;
+          if (runId) addOpts.runId = runId;
 
-          const result = await provider.add([{ role: "user", content: allFacts.join("\n") }], addOpts);
+          const result = (await backend.add(undefined, [{ role: "user", content: allFacts.join("\n") }], addOpts)) as BackendAddResult;
           const count = result.results?.length ?? 0;
           api.logger.info(`openclaw-mem0: stored ${count} memor${count === 1 ? "y" : "ies"} (infer=false, category=${category ?? "none"})`);
 
@@ -82,8 +87,15 @@ export function createMemoryAddTool(deps: ToolDeps) {
         }
 
         const combinedText = allFacts.join("\n");
+        const provOpts = buildAddOptions(uid, runId, currentSessionId);
+        const addOpts: BackendAddOptions = { userId: provOpts.user_id };
+        if (provOpts.run_id) addOpts.runId = provOpts.run_id;
+        if (provOpts.custom_instructions) addOpts.customInstructions = provOpts.custom_instructions;
+        if (provOpts.custom_categories) addOpts.customCategories = provOpts.custom_categories;
+        if (cfg.customInstructions && !addOpts.customInstructions) addOpts.customInstructions = cfg.customInstructions;
+        if (cfg.customCategories && !addOpts.customCategories) addOpts.customCategories = cfg.customCategories;
 
-        const result = await provider.add([{ role: "user", content: combinedText }], buildAddOptions(uid, runId, currentSessionId));
+        const result = (await backend.add(undefined, [{ role: "user", content: combinedText }], addOpts)) as BackendAddResult;
         const added = result.results?.filter((r) => r.event === "ADD") ?? [];
         const updated = result.results?.filter((r) => r.event === "UPDATE") ?? [];
         const summary = [];

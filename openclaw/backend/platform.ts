@@ -109,6 +109,11 @@ export class PlatformBackend implements Backend {
     if (opts.metadata) payload.metadata = opts.metadata;
     if (opts.infer === false) payload.infer = false;
     if (opts.categories) payload.categories = opts.categories;
+    if (opts.deducedMemories) payload.deduced_memories = opts.deducedMemories;
+    if (opts.customInstructions)
+      payload.custom_instructions = opts.customInstructions;
+    if (opts.customCategories)
+      payload.custom_categories = opts.customCategories;
 
     // V3 contract: POST /v3/memories/add/ is async — returns event_id, then
     // poll GET /v1/event/{event_id}/ until SUCCEEDED or FAILED. The polled
@@ -204,6 +209,7 @@ export class PlatformBackend implements Backend {
     if (apiFilters) payload.filters = apiFilters;
     if (opts.rerank) payload.rerank = true;
     if (opts.fields) payload.fields = opts.fields;
+    if (opts.categories) payload.categories = opts.categories;
 
     const result = (await this._request("POST", "/v3/memories/search/", {
       json: payload,

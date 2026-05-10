@@ -558,6 +558,13 @@ export function providerToBackend(
           ...(opts.runId && { run_id: opts.runId }),
           ...(opts.metadata && { metadata: opts.metadata }),
           ...(opts.infer === false && { infer: false }),
+          ...(opts.deducedMemories && { deduced_memories: opts.deducedMemories }),
+          ...(opts.customInstructions && {
+            custom_instructions: opts.customInstructions,
+          }),
+          ...(opts.customCategories && {
+            custom_categories: opts.customCategories,
+          }),
         },
       );
       return result as unknown as Record<string, unknown>;
@@ -571,6 +578,8 @@ export function providerToBackend(
         threshold: opts.threshold,
         filters: opts.filters,
         source: "OPENCLAW",
+        ...(opts.runId && { run_id: opts.runId }),
+        ...(opts.categories && { categories: opts.categories }),
       });
       return results as unknown as Record<string, unknown>[];
     },
@@ -585,6 +594,7 @@ export function providerToBackend(
         user_id: opts.userId ?? userId,
         page_size: opts.pageSize,
         source: "OPENCLAW",
+        ...(opts.runId && { run_id: opts.runId }),
       });
       return items as unknown as Record<string, unknown>[];
     },
