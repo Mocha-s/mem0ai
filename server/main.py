@@ -712,9 +712,12 @@ def list_memories_v3(
 def get_memory(memory_id: str, _auth=Depends(verify_auth)):
     """Retrieve a specific memory by ID."""
     try:
-        return localize_response_timestamps(get_memory_instance().get(memory_id))
+        result = get_memory_instance().get(memory_id)
     except Exception:
         raise upstream_error()
+    if not result:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return localize_response_timestamps(result)
 
 
 @app.post("/v3/memories/search/", summary="Search memories (hybrid retrieval)")

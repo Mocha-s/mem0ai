@@ -163,6 +163,20 @@ class TestV3MemoryCRUD:
         assert resp.status_code == 200
         assert resp.json()["id"] == "mem-1"
 
+    def test_get_memory_missing_returns_404(self, client):
+        c, fake_memory, _ = client
+        fake_memory.get.return_value = None
+        resp = c.get("/v3/memories/00000000-0000-0000-0000-000000000000/")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Memory not found"
+
+    def test_get_memory_empty_dict_returns_404(self, client):
+        c, fake_memory, _ = client
+        fake_memory.get.return_value = {}
+        resp = c.get("/v3/memories/00000000-0000-0000-0000-000000000000/")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Memory not found"
+
     def test_put_updates_memory(self, client):
         c, fake_memory, _ = client
         fake_memory.update.return_value = {"id": "mem-1", "memory": "y"}
