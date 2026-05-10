@@ -103,10 +103,21 @@ class PGVector(VectorStoreBase):
         
         if self.connection_pool is None:
             if PSYCOPG_VERSION == 3:
-                # psycopg3 ConnectionPool
-                self.connection_pool = ConnectionPool(conninfo=connection_string, min_size=minconn, max_size=maxconn, open=True)
+                # psycopg3 ConnectionPool. `check=ConnectionPool.check_connection`
+                # pings each connection before handing it out, so connections
+                # killed server-side (postgres restart, AdminShutdown, idle timeout)
+                # are replaced transparently instead of failing one in-flight query
+                # with `psycopg.errors.AdminShutdown: terminating connection`.
+                self.connection_pool = ConnectionPool(
+                    conninfo=connection_string,
+                    min_size=minconn,
+                    max_size=maxconn,
+                    open=True,
+                    check=ConnectionPool.check_connection,
+                )
             else:
-                # psycopg2 ThreadedConnectionPool
+                # psycopg2 ThreadedConnectionPool — no check hook available;
+                # callers will see one failed query after a postgres restart.
                 self.connection_pool = ConnectionPool(minconn=minconn, maxconn=maxconn, dsn=connection_string)
 
         collections = self.list_cols()
