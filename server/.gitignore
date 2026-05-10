@@ -2,3 +2,4 @@
 
 # Bind-mounted postgres data — never commit DB files
 data/postgres/
+data/history/

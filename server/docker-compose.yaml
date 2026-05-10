@@ -1,10 +1,11 @@
-name: mem0-dev
+name: mem0
 
 services:
   mem0:
     build:
       context: ..
-      dockerfile: server/dev.Dockerfile
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
     ports:
       - "8888:8000"
     env_file:
@@ -12,16 +13,10 @@ services:
     networks:
       - mem0_network
     volumes:
-      - ./history:/app/history
-      - .:/app
-      - ../mem0:/app/mem0_src/mem0:ro
-      - ../pyproject.toml:/app/mem0_src/pyproject.toml:ro
-      - ../README.md:/app/mem0_src/README.md:ro
+      - ./data/history:/app/history
     depends_on:
       postgres:
         condition: service_healthy
-    command: >
-      sh -c "rm -rf /app/packages && pip install -q --force-reinstall --no-deps /app/mem0_src && alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
@@ -32,30 +27,52 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - AUTH_DISABLED=${AUTH_DISABLED:-false}
       - MEM0_TELEMETRY=${MEM0_TELEMETRY:-true}
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/v1/ping/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.5"
+        reservations:
+          memory: 512M
 
   postgres:
-      image: ankane/pgvector:v0.5.1
-      restart: on-failure
-      shm_size: "128mb"
-      networks:
-        - mem0_network
-      environment:
-        - POSTGRES_USER=postgres
-        - POSTGRES_PASSWORD=postgres
-        - TZ=Asia/Shanghai
-      healthcheck:
-        test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "postgres"]
-        interval: 5s
-        timeout: 5s
-        retries: 5
-      volumes:
-        - ./data/postgres:/var/lib/postgresql/data
-        - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-      ports:
-        - "8432:5432"
+    image: ankane/pgvector:v0.5.1
+    restart: unless-stopped
+    shm_size: "256mb"
+    networks:
+      - mem0_network
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-d", "postgres", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    ports:
+      - "8432:5432"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
 
   mem0-dashboard:
     build: ./dashboard
+    restart: unless-stopped
     ports:
       - "3000:3000"
     networks:
@@ -66,11 +83,13 @@ services:
       - NEXT_PUBLIC_INSTANCE_NAME=Mem0
     depends_on:
       mem0:
-        condition: service_started
+        condition: service_healthy
+    # healthcheck currently failing — see /api/health route in dashboard/
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 10s
       timeout: 5s
+      start_period: 30s
       retries: 3
 
 networks:
