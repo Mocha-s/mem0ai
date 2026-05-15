@@ -190,6 +190,13 @@ class TestV3MemoryCRUD:
         resp = c.delete("/v3/memories/mem-1/")
         assert resp.status_code == 200
 
+    def test_delete_memory_missing_returns_404(self, client):
+        c, fake_memory, _ = client
+        fake_memory.delete.side_effect = ValueError("Memory with id mem-missing not found")
+        resp = c.delete("/v3/memories/mem-missing/")
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Memory not found"
+
     def test_history_endpoint(self, client):
         c, fake_memory, _ = client
         fake_memory.history.return_value = []

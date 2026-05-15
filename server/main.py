@@ -799,6 +799,10 @@ def delete_memory(memory_id: str, _auth=Depends(verify_auth)):
     try:
         get_memory_instance().delete(memory_id=memory_id)
         return MessageResponse(message="Memory deleted successfully")
+    except ValueError as e:
+        if str(e).startswith(f"Memory with id {memory_id} not found"):
+            raise HTTPException(status_code=404, detail="Memory not found")
+        raise upstream_error()
     except Exception:
         raise upstream_error()
 
