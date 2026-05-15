@@ -9,8 +9,11 @@ Provides:
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def get_bm25_params(query: str, *, lemmatized: Optional[str] = None) -> tuple:
@@ -92,6 +95,8 @@ def score_and_rank(
         max_possible += ENTITY_BOOST_WEIGHT
 
     scored: List[Dict[str, Any]] = []
+    out_of_range_count = 0
+    out_of_range_sample: Optional[float] = None
 
     for result in semantic_results:
         mem_id = result.get("id")
@@ -99,6 +104,15 @@ def score_and_rank(
             continue
 
         semantic_score = result.get("score", 0.0)
+        # Semantic scores must be similarities in [0, 1]; clamp out-of-range
+        # values so a vector-store regression (e.g. leaking a raw cosine
+        # distance instead of similarity) cannot silently invert ranking.
+        if semantic_score < 0.0 or semantic_score > 1.0:
+            out_of_range_count += 1
+            if out_of_range_sample is None:
+                out_of_range_sample = semantic_score
+            semantic_score = max(0.0, min(1.0, semantic_score))
+
         if semantic_score < threshold:
             continue
 
@@ -115,6 +129,15 @@ def score_and_rank(
                 "score": combined,
                 "payload": result.get("payload"),
             }
+        )
+
+    if out_of_range_count:
+        logger.warning(
+            "score_and_rank: %d candidate score(s) outside [0, 1] (e.g. %r); "
+            "clamped. This usually means a vector store is returning raw "
+            "distance instead of a similarity.",
+            out_of_range_count,
+            out_of_range_sample,
         )
 
     scored.sort(key=lambda x: x["score"], reverse=True)

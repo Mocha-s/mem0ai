@@ -450,7 +450,13 @@ class PGVector(VectorStoreBase):
             )
 
             results = cur.fetchall()
-        return [OutputData(id=str(r[0]), score=float(r[1]), payload=r[2]) for r in results]
+        # `<=>` returns cosine *distance* (lower = more similar). Convert to a
+        # similarity in [0, 1] so downstream scorers can sort descending and
+        # combine with BM25/entity boosts (which are already similarities).
+        return [
+            OutputData(id=str(r[0]), score=max(0.0, 1.0 - float(r[1])), payload=r[2])
+            for r in results
+        ]
 
     def keyword_search(self, query, top_k=5, filters=None):
         """

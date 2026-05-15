@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from mem0.utils.scoring import (
@@ -130,3 +132,44 @@ class TestScoreAndRank:
 class TestEntityBoostWeight:
     def test_weight_value(self):
         assert ENTITY_BOOST_WEIGHT == 0.5
+
+
+class TestScoreAndRankGuard:
+    """Defense-in-depth against vector stores returning raw distance as score.
+
+    Semantic scores from a vector store MUST be similarities in [0, 1].
+    If a store ever leaks a raw distance (or any out-of-range value) into the
+    scorer, the additive combine + descending sort silently inverts ranking
+    (this is exactly the pgvector bug). The guard clamps and logs a warning
+    so a regression cannot be silent again.
+    """
+
+    def test_high_out_of_range_score_is_clamped(self, caplog):
+        results = [
+            {"id": "a", "score": 1.5, "payload": {"data": "a"}},   # clamps to 1.0
+            {"id": "b", "score": 0.7, "payload": {"data": "b"}},
+        ]
+        with caplog.at_level(logging.WARNING, logger="mem0.utils.scoring"):
+            scored = score_and_rank(results, {}, {}, threshold=0.0, top_k=10)
+        ids = [s["id"] for s in scored]
+        assert ids == ["a", "b"]
+        assert scored[0]["score"] == pytest.approx(1.0)
+        assert any("outside [0, 1]" in rec.message for rec in caplog.records)
+
+    def test_negative_score_is_clamped_to_zero(self, caplog):
+        results = [
+            {"id": "neg", "score": -0.3, "payload": {"data": "neg"}},
+            {"id": "ok", "score": 0.4, "payload": {"data": "ok"}},
+        ]
+        with caplog.at_level(logging.WARNING, logger="mem0.utils.scoring"):
+            scored = score_and_rank(results, {}, {}, threshold=0.1, top_k=10)
+        # negative score clamped to 0, then dropped by threshold=0.1
+        ids = [s["id"] for s in scored]
+        assert ids == ["ok"]
+        assert any("outside [0, 1]" in rec.message for rec in caplog.records)
+
+    def test_in_range_scores_emit_no_warning(self, caplog):
+        results = [{"id": "a", "score": 0.5, "payload": {}}]
+        with caplog.at_level(logging.WARNING, logger="mem0.utils.scoring"):
+            score_and_rank(results, {}, {}, threshold=0.0, top_k=10)
+        assert not any("outside [0, 1]" in rec.message for rec in caplog.records)
